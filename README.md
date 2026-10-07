@@ -32,7 +32,7 @@ The native build requires the Android SDK, NDK, and CMake above. Instrumentation
 
 ### Existing validation evidence
 
-GitHub Actions successfully validated the current public `main` revision (`1bcc377a0edd3b4735932aa9a4f2494aa387b169`) in [run 37655097194](https://github.com/Yrika819/FLACtify/actions/runs/37655097194). The run passed JVM unit tests, the full Gradle test lifecycle, Android lint, the Debug build, the unsigned minified Release/R8 validation variant, and both APK ZIP and native ELF 16 KiB alignment checks.
+GitHub Actions successfully validated public `main` at revision `c4190625091f8282a5cd2c4dead6264a53c67ede` in [run 37658488986](https://github.com/Yrika819/FLACtify/actions/runs/37658488986). The run passed JVM unit tests, the full Gradle test lifecycle, Android lint, the Debug build, the unsigned minified Release/R8 validation variant, and both APK ZIP and native ELF 16 KiB alignment checks.
 
 The Release/R8 result is from the unsigned `releaseValidation` variant; production-signed APK validation is not claimed. This validation does not make APK distribution available. Public APK distribution remains blocked pending LGPL binary-distribution compliance.
 
