@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf '%s\n' \
+    'REPOSITORY SAFETY CHECK FAILED' \
+    'Refusing mutation because this checkout is not the canonical public-development repository.' >&2
+  exit 1
+}
+"$repo_root/scripts/verify-repo-role.sh"
