@@ -32,9 +32,9 @@ The native build requires the Android SDK, NDK, and CMake above. Instrumentation
 
 ### Existing validation evidence
 
-The current audited tree records the following validation evidence: JVM tests **263/263**, Pixel 7a instrumentation **52/52**, lint **0 errors**, and Debug build **PASS**. These are prior audit results, not a claim that these commands were rerun for this public-source preparation.
+The current audited tree records JVM tests **263/263**, Pixel 7a instrumentation **52/52**, lint **0 errors**, and Debug build **PASS**. The Pixel 7a instrumentation count is prior device-audit evidence.
 
-The current Release/R8 gate is **not validated**. The 8 GiB local machine could not complete the R8 gate. Public CI is intended to establish this result using an unsigned, minified release-validation variant with the same shrinking and ProGuard rules. Do not interpret a configured workflow as a passing result.
+The public Android validation workflow has also completed successfully on GitHub Actions. It validates the JVM test suite, the full Gradle test lifecycle, Android lint, Debug assembly, an **unsigned minified Release/R8 validation variant**, APK ZIP 16 KiB alignment, and bundled native ELF 16 KiB alignment. This is build-validation evidence only; it is **not** production-signed APK validation and does not change the separate binary-distribution licensing gate.
 
 ## Last.fm
 
