@@ -32,9 +32,9 @@ The native build requires the Android SDK, NDK, and CMake above. Instrumentation
 
 ### Existing validation evidence
 
-The current audited tree records the following validation evidence: JVM tests **263/263**, Pixel 7a instrumentation **52/52**, lint **0 errors**, and Debug build **PASS**. These are prior audit results, not a claim that these commands were rerun for this public-source preparation.
+GitHub Actions successfully validated the current public `main` revision (`b9ec49c1b9eaf67c4ad5ac7f7d04d6715d532940`) in [run 37641546019](https://github.com/Yrika819/FLACtify/actions/runs/37641546019). The run passed JVM unit tests, the full Gradle test lifecycle, Android lint, the Debug build, the unsigned minified Release/R8 validation variant, and both APK ZIP and native ELF 16 KiB alignment checks.
 
-The current Release/R8 gate is **not validated**. The 8 GiB local machine could not complete the R8 gate. Public CI is intended to establish this result using an unsigned, minified release-validation variant with the same shrinking and ProGuard rules. Do not interpret a configured workflow as a passing result.
+The Release/R8 result is from the unsigned `releaseValidation` variant; production-signed APK validation is not claimed. This validation does not make APK distribution available. Public APK distribution remains blocked pending LGPL binary-distribution compliance.
 
 ## Last.fm
 
