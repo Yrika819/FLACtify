@@ -199,7 +199,8 @@ android {
     }
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            pickFirsts += "META-INF/AL2.0"
+            pickFirsts += "META-INF/LGPL2.1"
         }
     }
     testOptions {
@@ -242,6 +243,33 @@ kotlin {
 }
 
 // ⚠️ ここから下が重要です！ implementation はこの dependencies の中に入れます
+val jaudiotaggerOverride = providers.gradleProperty("flactifyJaudiotaggerJar")
+    .orNull
+    ?.let(::file)
+
+if (jaudiotaggerOverride != null) {
+    require(jaudiotaggerOverride.isFile) {
+        "flactifyJaudiotaggerJar must point to an existing compatible JAR"
+    }
+}
+
+tasks.register("verifyJaudiotaggerOverride") {
+    doLast {
+        val suppliedJar = jaudiotaggerOverride
+            ?: error("Set -PflactifyJaudiotaggerJar=/path/to/compatible.jar")
+        val resolvedFiles = configurations
+            .getByName("releaseValidationRuntimeClasspath")
+            .incoming.artifacts.artifacts
+            .map { it.file.canonicalFile }
+        check(suppliedJar.canonicalFile in resolvedFiles) {
+            "The supplied jaudiotagger JAR was not selected for releaseValidation"
+        }
+        check(resolvedFiles.none { it.name == "jaudiotagger-3.0.1.jar" }) {
+            "The stock jaudiotagger Maven artifact is still present in releaseValidation"
+        }
+    }
+}
+
 dependencies {
     val media3_version = "1.11.1"
 
@@ -287,7 +315,11 @@ dependencies {
     implementation("androidx.media3:media3-datasource-okhttp:$media3_version")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    implementation("net.jthink:jaudiotagger:3.0.1")
+    if (jaudiotaggerOverride == null) {
+        implementation("net.jthink:jaudiotagger:3.0.1")
+    } else {
+        implementation(files(jaudiotaggerOverride))
+    }
 
 
 }
