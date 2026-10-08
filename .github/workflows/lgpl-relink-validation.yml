@@ -142,9 +142,10 @@ jobs:
         run: |
           set -euo pipefail
           WORK="${RUNNER_TEMP}/jaudiotagger"
-          echo "68aa0fe601b05df683a843acf6f8d4793ab476f47da1ac3dab57e0b1886b0aee  $MAVEN_BASE_URL/jaudiotagger-3.0.1.jar" > "$WORK/EXPECTED-SHA256SUMS"
-          echo "d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858  $MAVEN_BASE_URL/jaudiotagger-3.0.1-sources.jar" >> "$WORK/EXPECTED-SHA256SUMS"
-          echo "f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188  $MAVEN_BASE_URL/jaudiotagger-3.0.1.pom" >> "$WORK/EXPECTED-SHA256SUMS"
+          mkdir -p "$WORK"
+          echo "68aa0fe601b05df683a843acf6f8d4793ab476f47da1ac3dab57e0b1886b0aee  jaudiotagger-3.0.1.jar" > "$WORK/EXPECTED-SHA256SUMS"
+          echo "d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858  jaudiotagger-3.0.1-sources.jar" >> "$WORK/EXPECTED-SHA256SUMS"
+          echo "f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188  jaudiotagger-3.0.1.pom" >> "$WORK/EXPECTED-SHA256SUMS"
           for artifact in jaudiotagger-3.0.1.jar jaudiotagger-3.0.1-sources.jar jaudiotagger-3.0.1.pom; do
             curl --fail --location --silent --show-error \
               "$MAVEN_BASE_URL/$artifact" -o "$WORK/$artifact"
@@ -509,6 +510,10 @@ jobs:
         if: always()
         run: |
           WORK="${RUNNER_TEMP}/jaudiotagger"
-          test -f "$WORK/summary.txt" && cat "$WORK/summary.txt"
+          if [ -f "$WORK/summary.txt" ]; then
+            cat "$WORK/summary.txt"
+          else
+            echo "No relink summary was produced; an earlier step failed."
+          fi
           # No upload-artifact step: the modified source, the modified JAR and
           # the unsigned APK stay inside the runner and are never published.
