@@ -101,11 +101,11 @@ Release notes must prominently identify jaudiotagger 3.0.1 under LGPL-2.1-or-lat
 | --- | --- |
 | Upstream source hash | `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335` at revision `b885903528c63fa8ecf62ab117f7eebe931b6340` |
 | Maven binary / source JAR / POM | `68aa0fe6…`, `d9c79a14…`, `f2978526…` — all verified, and the vendored copies proved byte-identical from a fresh checkout |
-| Stock rebuilt JAR SHA-256 | `6c52bc6b67832ede835e7ca1a3b133f33f58638c9772f8dfe96ef810c22e37b6` |
+| Stock rebuilt JAR SHA-256 | `6c52bc6b67832ede835e7ca1a3b133f33f58638c9772f8dfe96ef810c22e37b6` (per-run; see note) |
 | Stock rebuild class set | 606 classes, identical to the audited Maven Central 3.0.1 binary |
 | Modified JAR SHA-256 | `1e4a8ef37f7aad650e0a787992508aab2280e2749ee233f169cdbf0559818d11` (differs from the stock rebuild; class set unchanged) |
 | Override verification | `:app:verifyJaudiotaggerOverride` PASS; 85 runtime artifacts resolved, none from `net.jthink:jaudiotagger` |
-| `releaseValidation` APK | 36,507,034 bytes, SHA-256 `9a6fb9846a97d095823923e6e62ae33b543be75c924ab2d830d2ec00f84e8afa` |
+| `releaseValidation` APK | 36,507,034 bytes, SHA-256 `9a6fb9846a97d095823923e6e62ae33b543be75c924ab2d830d2ec00f84e8afa` (per-run; see note) |
 | R8 | Enabled and completed; the APK is a real minified combined build |
 | Library incorporation | 606 `org.jaudiotagger` classes defined in the APK DEX, and the deterministic modification marker present |
 | APK notice and asset checks | LGPL-2.1, Apache-2.0, MPL-2.0, Public Suffix List, jaudiotagger, runtime, Steam Audio, CIPIC notices and the SHA-256-pinned CIPIC HRTF all verified present |
@@ -115,6 +115,8 @@ Release notes must prominently identify jaudiotagger 3.0.1 under LGPL-2.1-or-lat
 The marker check is required only because the repository's pre-existing `-keep class org.jaudiotagger.** { *; }` rule (already on `main`) guarantees the member survives; no keep rule was added to expose it. The unsigned validation APK is never uploaded or published.
 
 Required result: **MODIFIED JAUDIOTAGGER → MINIFIED FLACTIFY APK RELINK PASS.**
+
+**Note on the recorded hashes.** The stock-rebuilt JAR, modified JAR, and APK SHA-256 values above are observations from one specific run at commit `54052a0`; they are **not** stable expected values. Rebuilding with `javac`/`jar`/R8 embeds timestamps, so each run legitimately produces different bytes. A later run at commit `f1cd180` produced stock `a5865abc…`, modified `1d057ec3…`, and APK `2068ef49faf38eba40383b1b87f6a1716eb48f441e2a512a12a40b88e13212c8`, while reproducing every qualitative result identically (606-class stock set equal to the audited binary, modified JAR differing, 85 resolved runtime artifacts with none from `net.jthink:jaudiotagger`, 606 `org.jaudiotagger` classes in DEX, the marker present, all 16 KiB checks passing). The invariant the workflow enforces is the *relationship* between the hashes and the structural checks, not any fixed hash. The pinned upstream, Maven binary, source JAR, and POM hashes above are genuinely fixed and are the ones that must match exactly.
 
 ## Gate status
 
