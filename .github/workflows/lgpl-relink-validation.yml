@@ -1,0 +1,488 @@
+name: LGPL relink validation
+
+# Proves, on the project's authoritative CI runners, that a recipient can
+# rebuild jaudiotagger with a modification, substitute it into FLACtify, and
+# produce the minified releaseValidation APK. This is deliberately separate from
+# the Android validation workflow: it is a compliance proof with a much larger
+# time budget, not part of the authoritative per-change build gate.
+#
+# This workflow never publishes an APK and never receives signing material.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/lgpl-relink-validation.yml'
+      - '.repo-role'
+      - '.gitattributes'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'app/**'
+      - 'scripts/build-jaudiotagger.sh'
+      - 'scripts/prepare-apk-compliance-bundle.sh'
+      - 'scripts/test-jaudiotagger-relink.sh'
+      - 'scripts/verify-16k-apk.py'
+      - 'scripts/verify-repo-role.sh'
+      - 'third_party/jaudiotagger-3.0.1/**'
+      - 'third_party/licenses/**'
+  push:
+    branches: [chore/apk-lgpl-compliance]
+    paths:
+      - '.github/workflows/lgpl-relink-validation.yml'
+      - '.repo-role'
+      - '.gitattributes'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'app/**'
+      - 'scripts/build-jaudiotagger.sh'
+      - 'scripts/prepare-apk-compliance-bundle.sh'
+      - 'scripts/test-jaudiotagger-relink.sh'
+      - 'scripts/verify-16k-apk.py'
+      - 'scripts/verify-repo-role.sh'
+      - 'third_party/jaudiotagger-3.0.1/**'
+      - 'third_party/licenses/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lgpl-relink-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_SNAPSHOT_URL: https://bitbucket.org/ijabz/jaudiotagger/get/v3.0.1.tar.gz
+  UPSTREAM_REVISION: b885903528c63fa8ecf62ab117f7eebe931b6340
+  UPSTREAM_SNAPSHOT_SHA256: f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335
+  MAVEN_BASE_URL: https://repo1.maven.org/maven2/net/jthink/jaudiotagger/3.0.1
+  MAVEN_BINARY_SHA256: 68aa0fe601b05df683a843acf6f8d4793ab476f47da1ac3dab57e0b1886b0aee
+  MAVEN_SOURCES_SHA256: d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858
+  MAVEN_POM_SHA256: f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188
+  VENDORED_LICENSE_SHA256: 76ac9d645569ea2be48e5aea7b6336835a3fd9d4ef8284c7045bd8c59f6a7a39
+
+jobs:
+  relink:
+    name: Modified jaudiotagger to minified FLACtify APK
+    runs-on: ubuntu-latest
+    # The R8 minification of the combined release classpath is the expensive
+    # step this workflow exists to perform; it outran the 8 GiB local machine.
+    timeout-minutes: 120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify repository identity
+        run: ./scripts/verify-repo-role.sh
+
+      - name: Set up JDK
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK prerequisites
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.31.6"
+
+      - name: Confirm the pinned Gradle wrapper
+        run: |
+          ./gradlew --version
+          grep -F 'distributionSha256Sum' gradle/wrapper/gradle-wrapper.properties >/dev/null \
+            || { echo 'Gradle wrapper distribution checksum is not pinned' >&2; exit 1; }
+
+          # The audited revision must be recorded in the compliance record, and the
+          # short revision used to locate the extracted snapshot directory must be
+          # present in the scripts that consume the upstream archive.
+          SHORT_REVISION=${UPSTREAM_REVISION:0:12}
+          grep -F "$UPSTREAM_REVISION" docs/APK_DISTRIBUTION_COMPLIANCE.md >/dev/null \
+            || { echo "Audited upstream revision $UPSTREAM_REVISION is not recorded in the compliance record" >&2; exit 1; }
+          for script in scripts/test-jaudiotagger-relink.sh scripts/prepare-apk-compliance-bundle.sh; do
+            grep -F "$SHORT_REVISION" "$script" >/dev/null \
+              || { echo "$script does not locate the audited $SHORT_REVISION snapshot" >&2; exit 1; }
+          done
+          echo "Audited revision $UPSTREAM_REVISION is recorded and pinned for the snapshot path"
+
+      # ---------------------------------------------------------------------
+      # Step 5: obtain the exact audited upstream source, fail closed otherwise
+      # ---------------------------------------------------------------------
+      - name: Fetch and verify the audited jaudiotagger v3.0.1 source snapshot
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          mkdir -p "$WORK/upstream"
+          curl --fail --location --silent --show-error \
+            "$UPSTREAM_SNAPSHOT_URL" -o "$WORK/upstream-v3.0.1.tar.gz"
+          actual=$(sha256sum "$WORK/upstream-v3.0.1.tar.gz" | cut -d' ' -f1)
+          if [ "$actual" != "$UPSTREAM_SNAPSHOT_SHA256" ]; then
+            echo "Upstream source snapshot SHA-256 mismatch." >&2
+            echo "  expected $UPSTREAM_SNAPSHOT_SHA256" >&2
+            echo "  actual   $actual" >&2
+            echo "Refusing to substitute another tag, branch, or mirror." >&2
+            exit 1
+          fi
+          echo "Verified upstream v3.0.1 snapshot SHA-256 $actual (revision $UPSTREAM_REVISION)"
+          tar -xzf "$WORK/upstream-v3.0.1.tar.gz" -C "$WORK/upstream"
+          SRC="$WORK/upstream/ijabz-jaudiotagger-${UPSTREAM_REVISION:0:12}/src"
+          test -f "$SRC/org/jaudiotagger/audio/AudioFile.java" \
+            || { echo "Audited source snapshot is missing AudioFile.java" >&2; exit 1; }
+          printf '%s\n' "$SRC" > "$WORK/source-root.txt"
+
+      - name: Verify the Maven provenance artifacts
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          echo "68aa0fe601b05df683a843acf6f8d4793ab476f47da1ac3dab57e0b1886b0aee  $MAVEN_BASE_URL/jaudiotagger-3.0.1.jar" > "$WORK/EXPECTED-SHA256SUMS"
+          echo "d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858  $MAVEN_BASE_URL/jaudiotagger-3.0.1-sources.jar" >> "$WORK/EXPECTED-SHA256SUMS"
+          echo "f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188  $MAVEN_BASE_URL/jaudiotagger-3.0.1.pom" >> "$WORK/EXPECTED-SHA256SUMS"
+          for artifact in jaudiotagger-3.0.1.jar jaudiotagger-3.0.1-sources.jar jaudiotagger-3.0.1.pom; do
+            curl --fail --location --silent --show-error \
+              "$MAVEN_BASE_URL/$artifact" -o "$WORK/$artifact"
+          done
+          (cd "$WORK" && sha256sum -c EXPECTED-SHA256SUMS)
+
+          # The vendored copies in the repository must be byte-identical to
+          # Maven Central, otherwise a recipient rebuilding from the checkout
+          # would not reproduce the audited artifacts.
+          VENDORED=third_party/jaudiotagger-3.0.1
+          test "$(sha256sum "$VENDORED/jaudiotagger-3.0.1-sources.jar" | cut -d' ' -f1)" = "$MAVEN_SOURCES_SHA256" \
+            || { echo "Vendored sources JAR does not match the pinned Maven SHA-256" >&2; exit 1; }
+          test "$(sha256sum "$VENDORED/jaudiotagger-3.0.1.pom" | cut -d' ' -f1)" = "$MAVEN_POM_SHA256" \
+            || { echo "Vendored POM does not match the pinned Maven SHA-256" >&2; exit 1; }
+          test "$(sha256sum "$VENDORED/license.txt" | cut -d' ' -f1)" = "$VENDORED_LICENSE_SHA256" \
+            || { echo "Vendored upstream license.txt does not match its pinned SHA-256" >&2; exit 1; }
+          echo "Verified vendored provenance artifacts are byte-identical to Maven Central"
+
+      # ---------------------------------------------------------------------
+      # Step 6: rebuild the stock library from the audited source
+      # ---------------------------------------------------------------------
+      - name: Rebuild stock jaudiotagger and compare the production class set
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          SRC=$(cat "$WORK/source-root.txt")
+          ./scripts/build-jaudiotagger.sh "$SRC" "$WORK/jaudiotagger-stock-rebuilt.jar"
+          stock=$(sha256sum "$WORK/jaudiotagger-stock-rebuilt.jar" | cut -d' ' -f1)
+          printf '%s\n' "$stock" > "$WORK/stock-sha256.txt"
+          echo "Stock rebuilt JAR SHA-256: $stock"
+
+          # Byte equality with the Maven artifact is not asserted, but the set of
+          # production classes must match exactly so no source file was silently
+          # omitted and no extra class was invented.
+          jar tf "$WORK/jaudiotagger-stock-rebuilt.jar" | grep '\.class$' | sort > "$WORK/stock-classes.txt"
+          jar tf "$WORK/jaudiotagger-3.0.1.jar" | grep '\.class$' | sort > "$WORK/maven-classes.txt"
+          echo "Stock rebuild classes: $(wc -l < "$WORK/stock-classes.txt")"
+          echo "Maven binary classes:  $(wc -l < "$WORK/maven-classes.txt")"
+          if ! diff -u "$WORK/maven-classes.txt" "$WORK/stock-classes.txt"; then
+            echo "Rebuilt stock class set does not match the audited 3.0.1 binary" >&2
+            exit 1
+          fi
+          for required in org/jaudiotagger/audio/AudioFile.class org/jaudiotagger/tag/Tag.class; do
+            grep -Fxq "$required" "$WORK/stock-classes.txt" \
+              || { echo "Expected production class missing: $required" >&2; exit 1; }
+          done
+          echo "Stock rebuild class set matches the audited 3.0.1 binary exactly"
+
+      # ---------------------------------------------------------------------
+      # Step 7: build the modified library in the CI workspace only
+      # ---------------------------------------------------------------------
+      - name: Build the modified jaudiotagger JAR
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          SRC=$(cat "$WORK/source-root.txt")
+          cp -R "$SRC" "$WORK/modified-source"
+          python3 - "$WORK/modified-source/org/jaudiotagger/audio/AudioFile.java" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+          needle = "public class AudioFile\n{"
+          replacement = needle + '\n    public static final String FLACTIFY_RELINK_PROOF = "modified-jaudiotagger";'
+          if source.count(needle) != 1:
+              raise SystemExit("Expected a single AudioFile class declaration")
+          path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+          PY
+          ./scripts/build-jaudiotagger.sh "$WORK/modified-source" "$WORK/jaudiotagger-modified.jar"
+          modified=$(sha256sum "$WORK/jaudiotagger-modified.jar" | cut -d' ' -f1)
+          stock=$(cat "$WORK/stock-sha256.txt")
+          printf '%s\n' "$modified" > "$WORK/modified-sha256.txt"
+          echo "Stock rebuilt JAR SHA-256: $stock"
+          echo "Modified JAR SHA-256:      $modified"
+          if [ "$modified" = "$stock" ]; then
+            echo "Modified JAR is identical to the stock rebuild" >&2
+            exit 1
+          fi
+          if cmp -s "$WORK/jaudiotagger-stock-rebuilt.jar" "$WORK/jaudiotagger-modified.jar"; then
+            echo "Modified JAR is byte-identical to the stock rebuild" >&2
+            exit 1
+          fi
+          echo "Modified JAR differs from the stock rebuild as required"
+          # The change is a deterministic source modification, not a repackage.
+          jar tf "$WORK/jaudiotagger-modified.jar" | grep '\.class$' | sort > "$WORK/modified-classes.txt"
+          diff -q "$WORK/stock-classes.txt" "$WORK/modified-classes.txt" \
+            && echo "Modification is field-level only; class set unchanged"
+
+      # ---------------------------------------------------------------------
+      # Step 8: prove the Gradle override actually selects the modified JAR
+      # ---------------------------------------------------------------------
+      - name: Verify the Gradle override selects the modified JAR
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          MODIFIED="$WORK/jaudiotagger-modified.jar"
+          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:verifyJaudiotaggerOverride
+          echo "PASS: :app:verifyJaudiotaggerOverride"
+
+          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:dependencies \
+            --configuration releaseValidationRuntimeClasspath \
+            | tee "$WORK/override-dependencies.txt"
+          echo "--- end releaseValidation dependency resolution ---"
+
+          python3 - "$WORK/override-dependencies.txt" "$MODIFIED" <<'PY'
+          from pathlib import Path
+          import sys
+
+          text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          modified = Path(sys.argv[2]).resolve()
+
+          if "net.jthink:jaudiotagger" in text:
+              raise SystemExit(
+                  "Maven net.jthink:jaudiotagger is still resolved for releaseValidation; "
+                  "the modified file dependency did not replace it"
+              )
+          selected = [
+              line.strip()
+              for line in text.splitlines()
+              if line.strip().endswith(modified.name)
+              or line.strip().endswith(str(modified))
+          ]
+          if not selected:
+              raise SystemExit(
+                  f"The modified JAR {modified} does not appear in the resolved "
+                  "releaseValidation dependency graph"
+              )
+          if "flactifyJaudiotaggerJar" in text and modified.name not in text:
+              raise SystemExit("Ambiguous resolution: override present but JAR absent from graph")
+          print(f"PASS: modified file dependency selected ({selected[0]})")
+          print("PASS: Maven net.jthink:jaudiotagger is absent from the same runtime path")
+          PY
+
+      # ---------------------------------------------------------------------
+      # Step 9: the actual minified APK, with nothing disabled
+      # ---------------------------------------------------------------------
+      - name: Assemble the minified releaseValidation APK with the modified JAR
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          MODIFIED="$WORK/jaudiotagger-modified.jar"
+          # R8, resource shrinking, ProGuard rules, the native build and Steam
+          # Audio staging all stay enabled exactly as in a normal release build.
+          ./gradlew assembleReleaseValidation -PflactifyJaudiotaggerJar="$MODIFIED"
+          APK=$(find app/build/outputs/apk/releaseValidation -type f -name '*.apk' -print -quit)
+          test -n "$APK" || { echo "releaseValidation APK was not produced" >&2; exit 1; }
+          printf '%s\n' "$APK" > "$WORK/apk-path.txt"
+          echo "releaseValidation APK: $APK"
+          sha256sum "$APK" | tee "$WORK/apk-sha256.txt"
+
+      # ---------------------------------------------------------------------
+      # Step 10: prove the library is actually incorporated
+      # ---------------------------------------------------------------------
+      - name: Confirm jaudiotagger is incorporated in the APK
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          APK=$(cat "$WORK/apk-path.txt")
+          APKANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+
+          # Evidence 1: jaudiotagger-derived code is present in the DEX.
+          if ! "$APKANALYZER" dex packages --defined-only "$APK" | grep -q '^C.*org\.jaudiotagger\.'; then
+            "$APKANALYZER" dex packages --defined-only "$APK" | grep -E 'jaudiotagger' || true
+            echo "No org.jaudiotagger packages found in the APK DEX" >&2
+            exit 1
+          fi
+          jaudiotagger_classes=$("$APKANALYZER" dex packages --defined-only "$APK" \
+            | grep -c '^C.*org\.jaudiotagger\.')
+          echo "PASS: $jaudiotagger_classes org.jaudiotagger classes are defined in the APK DEX"
+
+          # Evidence 2 (additional, not the primary proof): the deterministic
+          # marker. R8 may legitimately remove an unused constant, so this is
+          # only required while the repository's pre-existing keep rule already
+          # guarantees the member survives. No keep rule is added for this.
+          if grep -Fqx -- '-keep class org.jaudiotagger.** { *; }' app/proguard-rules.pro; then
+            echo "Repository keep rule '-keep class org.jaudiotagger.** { *; }' is present,"
+            echo "so the deterministic marker is required to survive into DEX."
+            if "$APKANALYZER" dex code --class org.jaudiotagger.audio.AudioFile "$APK" \
+                | grep -Fq 'modified-jaudiotagger'; then
+              echo "PASS: deterministic modification marker found in the APK DEX"
+            else
+              echo "Deterministic marker absent although the keep rule is present" >&2
+              exit 1
+            fi
+          else
+            echo "NOTE: no repository keep rule for org.jaudiotagger; R8 may legitimately"
+            echo "optimize the marker away. Reporting only; not weakening R8 to expose it."
+            if "$APKANALYZER" dex code --class org.jaudiotagger.audio.AudioFile "$APK" \
+                | grep -Fq 'modified-jaudiotagger'; then
+              echo "INFO: marker happens to survive into DEX"
+            else
+              echo "INFO: marker optimized away by R8, which is permitted"
+            fi
+          fi
+
+          # Evidence 3: the APK is a real minified combined build, not a stub.
+          size=$(stat -c%s "$APK")
+          echo "APK size: $size bytes"
+          test "$size" -gt 1000000 \
+            || { echo "APK is implausibly small for a combined minified build" >&2; exit 1; }
+          "$APKANALYZER" manifest print "$APK" | grep -E 'package|versionName' | head -5
+
+          echo "MODIFIED JAUDIOTAGGER -> MINIFIED FLACTIFY APK RELINK PASS"
+
+      # ---------------------------------------------------------------------
+      # Step 11: compliance validation of the generated APK
+      # ---------------------------------------------------------------------
+      - name: Validate 16 KiB alignment, notices, and assets in the APK
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          APK=$(cat "$WORK/apk-path.txt")
+
+          echo "== APK ZIP 16 KiB alignment =="
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$APK"
+
+          echo "== every native ELF 16 KiB alignment =="
+          python3 scripts/verify-16k-apk.py "$APK"
+
+          echo "== required license and notice assets =="
+          python3 - "$APK" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import sys
+          import zipfile
+
+          REQUIRED = {
+              "assets/licenses/LGPL-2.1.txt": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+              "assets/licenses/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+              "assets/licenses/jaudiotagger-3.0.1-NOTICE.txt": None,
+              "assets/licenses/RUNTIME-DEPENDENCIES-NOTICE.txt": None,
+              "assets/licenses/steam-audio-4.8.1-LICENSE.md": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+              "assets/licenses/steam-audio-4.8.1-THIRDPARTY.md": None,
+              "assets/licenses/CIPIC-124-HRTF-NOTICE.md": None,
+              "assets/hrtf/cipic_124.sofa": "c28ff4a874ac889ec0c5885ca524762a70d56984232ff7aadcd9c15d32e1cfb6",
+          }
+
+          with zipfile.ZipFile(sys.argv[1]) as apk:
+            names = set(apk.namelist())
+            problems: list[str] = []
+            for name, expected in REQUIRED.items():
+                if name not in names:
+                    problems.append(f"missing required asset: {name}")
+                    continue
+                data = apk.read(name)
+                if expected is not None:
+                    actual = hashlib.sha256(data).hexdigest()
+                    if actual != expected:
+                        problems.append(
+                            f"{name}: expected SHA-256 {expected}, got {actual}"
+                        )
+                    else:
+                        print(f"PASS {name} ({expected})")
+                else:
+                    if not data.strip():
+                        problems.append(f"{name} is empty")
+                    else:
+                        print(f"PASS {name} present ({len(data)} bytes)")
+
+              # Steam Audio notice must be the exact unshortened upstream text.
+            third_party = "assets/licenses/steam-audio-4.8.1-THIRDPARTY.md"
+            if third_party in names:
+                text = apk.read(third_party).decode("utf-8", "replace")
+                for marker in (
+                    "Steam Audio Third-Party Licenses",
+                    "Intel Integrated Performance Primitives",
+                    "CIPIC HRTF Database",
+                    "Google Spherical Harmonics Library",
+                    "AMD TrueAudio Next",
+                    "Intel Embree",
+                    "MySOFA",
+                ):
+                    if marker not in text:
+                        problems.append(f"Steam Audio third-party notice is missing {marker!r}")
+
+            cipic = "assets/licenses/CIPIC-124-HRTF-NOTICE.md"
+            if cipic in names:
+                text = apk.read(cipic).decode("utf-8", "replace")
+                if "The Regents of the University of California" not in text:
+                    problems.append("CIPIC notice does not reproduce the required attribution")
+
+            lgpl = "assets/licenses/LGPL-2.1.txt"
+            if lgpl in names:
+                text = apk.read(lgpl).decode("utf-8", "replace")
+                if "GNU LESSER GENERAL PUBLIC LICENSE" not in text:
+                    problems.append("LGPL-2.1 asset is not the license text")
+
+            if not any(n.startswith("lib/") and n.endswith(".so") for n in names):
+                problems.append("APK contains no packaged native libraries")
+
+            if problems:
+                for problem in problems:
+                    print(f"FAIL {problem}", file=sys.stderr)
+                raise SystemExit(1)
+            print("PASS: all required license, notice, and HRTF assets verified")
+          PY
+
+      # ---------------------------------------------------------------------
+      # Step 12: the override must remain opt-in only
+      # ---------------------------------------------------------------------
+      - name: Confirm normal builds still resolve the Maven artifact
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          # Clean invocation with no flactifyJaudiotaggerJar property.
+          ./gradlew --rerun-tasks :app:dependencyInsight \
+            --configuration releaseRuntimeClasspath \
+            --dependency net.jthink:jaudiotagger \
+            | tee "$WORK/normal-dependency.txt"
+          grep -Fq 'net.jthink:jaudiotagger:3.0.1' "$WORK/normal-dependency.txt"
+          echo "PASS: normal build still resolves net.jthink:jaudiotagger:3.0.1"
+
+      - name: Summarize the relink proof
+        run: |
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          {
+            echo "=== jaudiotagger LGPL relink proof ==="
+            echo "upstream revision:            $UPSTREAM_REVISION"
+            echo "upstream snapshot SHA-256:    $UPSTREAM_SNAPSHOT_SHA256"
+            echo "Maven binary SHA-256:         $MAVEN_BINARY_SHA256"
+            echo "Maven source JAR SHA-256:     $MAVEN_SOURCES_SHA256"
+            echo "Maven POM SHA-256:            $MAVEN_POM_SHA256"
+            echo "stock rebuilt JAR SHA-256:    $(cat "$WORK/stock-sha256.txt")"
+            echo "modified JAR SHA-256:         $(cat "$WORK/modified-sha256.txt")"
+            echo "override verification:        :app:verifyJaudiotaggerOverride PASS"
+            echo "releaseValidation APK:        $(cat "$WORK/apk-path.txt")"
+            echo "releaseValidation APK SHA-256:$(cut -d' ' -f1 < "$WORK/apk-sha256.txt")"
+            echo "R8 / resource shrinking:      enabled (not disabled for this proof)"
+            echo "APK notices and 16 KiB checks: passed in the preceding steps"
+            echo "NOTE: this unsigned validation APK is never uploaded or published."
+          } | tee "$WORK/summary.txt"
+
+      - name: Record the relink proof as a build log only
+        if: always()
+        run: |
+          WORK="${RUNNER_TEMP}/jaudiotagger"
+          test -f "$WORK/summary.txt" && cat "$WORK/summary.txt"
+          # No upload-artifact step: the modified source, the modified JAR and
+          # the unsigned APK stay inside the runner and are never published.
