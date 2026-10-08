@@ -30,7 +30,30 @@ Artifacts independently downloaded from Maven Central for `net.jthink:jaudiotagg
 | Upstream `license.txt` from the `v3.0.1` tag | `76ac9d645569ea2be48e5aea7b6336835a3fd9d4ef8284c7045bd8c59f6a7a39` |
 | Complete LGPL-2.1 text (`third_party/licenses/LGPL-2.1.txt`) | See `SHA256SUMS` generated for the release bundle |
 
-The complete corresponding source basis is the canonical upstream source snapshot for tag `v3.0.1`, resolved independently to commit `b885903528c63fa8ecf62ab117f7eebe931b6340`. The exact Bitbucket archive at `https://bitbucket.org/ijabz/jaudiotagger/get/v3.0.1.tar.gz` was downloaded and SHA-256 verified as `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335`. It includes the complete `src/` tree, package/interface documentation resources, Maven POM (SHA-256 `1839f6cde0bbd718edca1f1b68c0ad0148a3b8a3bf00382df1ed3890ac275014`), README, changelog, and upstream license; no production generated-source step or external compile dependency was found. Building with `scripts/build-jaudiotagger.sh` using `javac --release 8` produced a JAR whose class list matches the Maven Central 3.0.1 binary exactly (stock rebuild hash from one run: `3db681f1e45abaec6bdc5c34001f652a4387014732e5d93a18c96d59fd11b04b`; byte identity is not asserted). In an isolated same-run comparison, a harmless temporary source marker produced a stock JAR hash `4d139a9e8370da1cfb760b4c68cb009876dc83dbd0ece4becef28c962c06804a` and modified JAR hash `b210245c5d50de20b4c6b4341d82b55fdb067c50b9ac08be1c724e38976e86e6`; direct byte comparison confirmed the modified JAR differs. A separately rebuilt modified JAR (`18008280868134b1701889425d7e94fd05c32ddea10725f6fa4029f18893f58b`) was accepted by `:app:verifyJaudiotaggerOverride`. The integrated relink build advanced to R8 minification, but the validation APK did not finish, so no relink APK/DEX marker proof is claimed. The Maven Central source JAR/POM remain supplemental provenance, not the sole corresponding source.
+The complete corresponding source basis is the canonical upstream source snapshot for tag `v3.0.1`, resolved independently to commit `b885903528c63fa8ecf62ab117f7eebe931b6340`. The exact Bitbucket archive at `https://bitbucket.org/ijabz/jaudiotagger/get/v3.0.1.tar.gz` was downloaded and SHA-256 verified as `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335`. It includes the complete `src/` tree, package/interface documentation resources, Maven POM (SHA-256 `1839f6cde0bbd718edca1f1b68c0ad0148a3b8a3bf00382df1ed3890ac275014`), README, changelog, and upstream license; no production generated-source step or external compile dependency was found. Building with `scripts/build-jaudiotagger.sh` using `javac --release 8` produced a JAR whose class list matches the Maven Central 3.0.1 binary exactly (stock rebuild hash from one run: `3db681f1e45abaec6bdc5c34001f652a4387014732e5d93a18c96d59fd11b04b`; byte identity is not asserted). In an isolated same-run comparison, a harmless temporary source marker produced a stock JAR hash `4d139a9e8370da1cfb760b4c68cb009876dc83dbd0ece4becef28c962c06804a` and modified JAR hash `b210245c5d50de20b4c6b4341d82b55fdb067c50b9ac08be1c724e38976e86e6`; direct byte comparison confirmed the modified JAR differs. A separately rebuilt modified JAR (`18008280868134b1701889425d7e94fd05c32ddea10725f6fa4029f18893f58b`) was accepted by `:app:verifyJaudiotaggerOverride`. The Maven Central source JAR/POM remain supplemental provenance, not the sole corresponding source.
+
+## Determination: the audited v3.0.1 snapshot is the corresponding source
+
+This section records why the package distributed as `jaudiotagger-3.0.1-complete-source.tar.gz` qualifies as the complete corresponding source of the jaudiotagger code actually redistributed in the APK. It is a technical determination by the project, not a legal opinion.
+
+| Required element | What is distributed | Evidence |
+| --- | --- | --- |
+| Upstream revision | Canonical upstream tag `v3.0.1`, resolved to commit `b885903528c63fa8ecf62ab117f7eebe931b6340` | The Bitbucket `get/v3.0.1.tar.gz` archive unpacks to a directory named for that commit, `ijabz-jaudiotagger-b885903528c6`, and `scripts/build-jaudiotagger.sh`, `scripts/test-jaudiotagger-relink.sh`, and `scripts/prepare-apk-compliance-bundle.sh` all locate the snapshot by that prefix |
+| Snapshot SHA-256 | `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335` | Verified on download; the relink workflow fails closed on any mismatch rather than falling back to another tag or branch |
+| Production source | The complete upstream `src/` tree, unmodified, including all `org/jaudiotagger/**` packages and the package/interface documentation resources | `upstream/src/` in the bundle. Rebuilding it yields exactly the 606 production classes present in the audited Maven Central 3.0.1 binary, so no production source file is omitted |
+| Build metadata | The original upstream `pom.xml`, `README.md`, and `CHANGES.txt` | `upstream/` in the bundle |
+| Scripts and build inputs | `build-jaudiotagger.sh`, which enumerates every `.java` file under `org/jaudiotagger`, compiles with `javac --release 8 -encoding UTF-8`, and packages with `jar`; plus `BUILDING.md` documenting the procedure | `scripts/build-jaudiotagger.sh` and `BUILDING.md` in the bundle |
+| License | The verbatim upstream `license.txt` plus the complete LGPL-2.1 text | `license.txt` (SHA-256 `76ac9d64...`) and `LGPL-2.1.txt` (SHA-256 `20e50fe7...`) in the bundle; the APK additionally carries both texts as assets |
+| Supplemental provenance | Maven Central source JAR and POM, retained for traceability only | `maven-central/` in the bundle |
+
+Why this qualifies rather than relying on the Maven `sources.jar`:
+
+- The `sources.jar` is **not** the source used to build the redistributed binary. The authoritative basis is the upstream VCS snapshot, which additionally carries the upstream POM, README, changelog, license, and documentation resources that the Maven source JAR does not reproduce as a buildable unit.
+- Nothing needed to compile is missing. Inspection of the upstream tree and a successful full-tree compile found no external production compile dependency and no generated-source or annotation-processor step, so the explicit `javac` invocation is a complete build description for this library.
+- Completeness is **tested, not asserted**: the rebuilt JAR's class set is compared entry-for-entry against the audited Maven Central 3.0.1 binary, in the relink workflow and locally. This is what distinguishes a genuinely complete source package from a partial one.
+- The proof is exercised end to end: a recipient takes the distributed source, builds it, applies a modification, rebuilds, and relinks it into a minified APK. That is exactly what `.github/workflows/lgpl-relink-validation.yml` executes on GitHub's runners.
+
+The earlier observation that a locally initiated `assembleReleaseValidation` stalled inside R8 was a limit of an 8 GiB developer machine, not evidence about the source package or about relinkability. That heavy proof was moved to CI; see the gate status below.
 
 ## Rebuild and relink instructions
 
@@ -72,4 +95,20 @@ Release notes must prominently identify jaudiotagger 3.0.1 under LGPL-2.1-or-lat
 
 ## Gate status
 
-**BLOCKED pending evidence.** Android SDK Platform 36, Build Tools 36.0.0, NDK 28.2.13676358, and CMake 3.31.6 were discovered locally and supplied only to individual Gradle processes; no `local.properties` was created. The exact normal runtime graph was captured. `testDebugUnitTest`, full Gradle `test`, `lint`, and `assembleDebug` passed. The debug APK’s required notices/assets and Steam Audio/CIPIC hashes were inspected; debug ZIP alignment and all native ELF 16 KiB alignments passed. Gitleaks, source/config/docs personal-path scanning, credential-filename scanning, shellcheck, and `git diff --check` passed. The modified-source `releaseValidation` build passed the Gradle external-JAR selection task and reached R8 minification, but did not complete within a 20-minute command timeout; therefore no relink APK or DEX marker proof exists. Final signed-APK inspection, complete artifact-by-artifact runtime license audit, fresh-extraction bundle test, CodeQL/Android CI (not run because the branch was not pushed), production signing, and release-asset audit remain outstanding. Do not describe the APK as READY or publish a draft/public Release.
+**BLOCKED pending evidence.** What has been established:
+
+- Repository role guard passes; all work is on `chore/apk-lgpl-compliance`; canonical `origin` only.
+- Shell syntax, ShellCheck, workflow YAML parse, `git diff --check`, Gitleaks, and personal-path scanning are clean. Every `run` block in the relink workflow passes `bash -n` and ShellCheck, and every embedded Python heredoc was parsed and unit-tested against both passing and deliberately-broken inputs.
+- The audited upstream snapshot hash verifies, the vendored Maven provenance artifacts are byte-identical to Maven Central from a fresh checkout, and a stock rebuild from the upstream source reproduces exactly the 606 production classes of the audited 3.0.1 binary. A deterministic source modification produces a different JAR.
+- `compileDebugKotlin`, `lintDebug`, `:app:verifyJaudiotaggerOverride` with the override property, and a normal `releaseRuntimeClasspath` resolution to `net.jthink:jaudiotagger:3.0.1` all pass locally, confirming the override stays opt-in.
+- **UNRESOLVED RUNTIME LICENSE BLOCKERS = 0.** All 114 resolved runtime modules are classified; see `docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`, which also records the two findings a POM-only audit gets wrong in opposite directions.
+
+What remains outstanding:
+
+- `.github/workflows/lgpl-relink-validation.yml` GREEN: the minified `releaseValidation` APK built from the modified jaudiotagger, with R8, resource shrinking, ProGuard rules, the native build and Steam Audio staging all enabled. This is the heavy proof that could not complete on the 8 GiB local machine, and it is the reason it now runs in CI.
+- Final signed Release APK inspection: `apksigner verify`, ZIP alignment, native ELF 16 KiB alignment, and a packaged `lib/`/`assets/` reconciliation against the inventory.
+- Fresh-extraction bundle rebuild/relink from `scripts/prepare-apk-compliance-bundle.sh` output.
+- Production signing with external signing material, performed outside CI; private keys and passwords are never committed or uploaded.
+- Draft `v2.5.1` Release asset audit.
+
+Do not describe the APK as READY and do not publish a draft or public Release until every item above has passed and been reviewed.
