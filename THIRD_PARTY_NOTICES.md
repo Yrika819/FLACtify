@@ -163,6 +163,27 @@ runtime graph is in
 recipient-facing classification and the remaining final-APK audit are in
 [`docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`](docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md).
 
+### Public Suffix List (MPL-2.0) — redistributed inside OkHttp
+
+OkHttp 4.12.0 ships the resource `okhttp3/internal/publicsuffix/publicsuffixes.gz`,
+compiled from [The Public Suffix List](https://publicsuffix.org/list/public_suffix_list.dat).
+OkHttp's own packaged notice records that this data "is subject to the terms of
+the Mozilla Public License, v. 2.0", and the Public Suffix List project
+distributes the list under MPL-2.0.
+
+Accordingly the APK also contains `licenses/MPL-2.0.txt` (SHA-256
+`3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04`) and
+`licenses/PUBLIC-SUFFIX-LIST-NOTICE.txt`, which reproduces the attribution and
+points to the corresponding source, satisfying the MPL-2.0 section 3.2
+conditions that apply when Covered Software is distributed in executable form.
+FLACtify does not modify the Public Suffix List data. MPL-2.0 is a file-level
+copyleft license and imposes no obligation on FLACtify's own code or on the
+other libraries in the APK.
+
+This is the only non-LGPL copyleft material in the distributed APK other than
+jaudiotagger. No other resolved runtime module ships an Apache `NOTICE` file, so
+the Apache-2.0 section 4(d) notice condition is not triggered for any of them.
+
 Build-only tools and test/debug-scoped dependencies are classified separately
 in that inventory and are not intended to be included in Release runtime. The
 final `releaseValidation` and signed APK must still be inspected before claiming

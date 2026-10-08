@@ -58,6 +58,11 @@ fun SettingsScreen(
             context.assets.open("licenses/Apache-2.0.txt").bufferedReader().use { it.readText() }
         }.getOrElse { "The Apache-2.0 license text is unavailable." }
     }
+    val mplLicense = remember(context) {
+        runCatching {
+            context.assets.open("licenses/MPL-2.0.txt").bufferedReader().use { it.readText() }
+        }.getOrElse { "The MPL-2.0 license text is unavailable." }
+    }
 
     var showLicenseDialog by remember { mutableStateOf(false) }
     var showCacheDialog by remember { mutableStateOf(false) }
@@ -476,6 +481,12 @@ fun SettingsScreen(
                         color = Color.White
                     )
                     Text(apacheLicense, color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                    Spacer(Modifier.height(20.dp))
+                    Text(
+                        "OkHttp ships Public Suffix List data from the Public Suffix List project under the Mozilla Public License 2.0. FLACtify does not modify that data. Its corresponding source is the public list at https://publicsuffix.org/list/public_suffix_list.dat.",
+                        color = Color.White
+                    )
+                    Text(mplLicense, color = Color(0xCCFFFFFF), fontSize = 12.sp)
                 }
             },
             confirmButton = {
