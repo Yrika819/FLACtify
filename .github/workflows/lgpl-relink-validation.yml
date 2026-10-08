@@ -243,7 +243,8 @@ jobs:
           set -euo pipefail
           WORK="${RUNNER_TEMP}/jaudiotagger"
           MODIFIED="$WORK/jaudiotagger-modified.jar"
-          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:verifyJaudiotaggerOverride
+          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:verifyJaudiotaggerOverride \
+            | tee "$WORK/override-artifacts.txt"
           echo "PASS: :app:verifyJaudiotaggerOverride"
 
           ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:dependencies \
@@ -251,32 +252,47 @@ jobs:
             | tee "$WORK/override-dependencies.txt"
           echo "--- end releaseValidation dependency resolution ---"
 
-          python3 - "$WORK/override-dependencies.txt" "$MODIFIED" <<'PY'
+          python3 - "$WORK/override-artifacts.txt" "$WORK/override-dependencies.txt" "$MODIFIED" <<'PY'
           from pathlib import Path
           import sys
 
-          text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-          modified = Path(sys.argv[2]).resolve()
+          artifacts_text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          graph_text = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+          modified = Path(sys.argv[3]).resolve()
 
-          if "net.jthink:jaudiotagger" in text:
+          # The resolved artifact set is the authoritative positive evidence.
+          # Gradle's `dependencies` tree report renders no file dependencies at
+          # all, so the selected JAR is read from the verification task's own
+          # artifact dump instead of from the graph text.
+          resolved = []
+          for line in artifacts_text.splitlines():
+              marker = "JAUDIOTAGGER_RUNTIME_ARTIFACT\t"
+              index = line.find(marker)
+              if index >= 0:
+                  resolved.append(Path(line[index + len(marker):].strip()).resolve())
+          if not resolved:
               raise SystemExit(
-                  "Maven net.jthink:jaudiotagger is still resolved for releaseValidation; "
-                  "the modified file dependency did not replace it"
+                  "No resolved runtime artifacts were reported; cannot confirm "
+                  "which jaudiotagger JAR Gradle selected"
               )
-          selected = [
-              line.strip()
-              for line in text.splitlines()
-              if line.strip().endswith(modified.name)
-              or line.strip().endswith(str(modified))
-          ]
-          if not selected:
+          if modified not in resolved:
               raise SystemExit(
-                  f"The modified JAR {modified} does not appear in the resolved "
-                  "releaseValidation dependency graph"
+                  f"The modified JAR {modified} is not in the resolved "
+                  f"releaseValidation artifact set ({len(resolved)} artifacts)"
               )
-          if "flactifyJaudiotaggerJar" in text and modified.name not in text:
-              raise SystemExit("Ambiguous resolution: override present but JAR absent from graph")
-          print(f"PASS: modified file dependency selected ({selected[0]})")
+          stock = [p for p in resolved if p.name == "jaudiotagger-3.0.1.jar"]
+          if stock:
+              raise SystemExit(f"The stock Maven jaudiotagger artifact is still selected: {stock}")
+
+          # Fail closed if the Maven coordinate still appears anywhere in the graph.
+          if "net.jthink:jaudiotagger" in graph_text:
+              raise SystemExit(
+                  "Maven net.jthink:jaudiotagger is still resolved for "
+                  "releaseValidation; the modified file dependency did not replace it"
+              )
+
+          print(f"PASS: modified file dependency selected ({modified})")
+          print(f"PASS: {len(resolved)} runtime artifacts resolved, none from net.jthink:jaudiotagger")
           print("PASS: Maven net.jthink:jaudiotagger is absent from the same runtime path")
           PY
 

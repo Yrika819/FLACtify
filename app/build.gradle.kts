@@ -257,10 +257,15 @@ tasks.register("verifyJaudiotaggerOverride") {
     doLast {
         val suppliedJar = jaudiotaggerOverride
             ?: error("Set -PflactifyJaudiotaggerJar=/path/to/compatible.jar")
+        // Gradle's `dependencies` tree report does not render file dependencies
+        // at all, so the resolved artifact set is printed explicitly. CI asserts
+        // against these lines to prove the supplied JAR was selected.
         val resolvedFiles = configurations
             .getByName("releaseValidationRuntimeClasspath")
             .incoming.artifacts.artifacts
             .map { it.file.canonicalFile }
+            .sortedBy { it.path }
+        resolvedFiles.forEach { println("JAUDIOTAGGER_RUNTIME_ARTIFACT\t$it") }
         check(suppliedJar.canonicalFile in resolvedFiles) {
             "The supplied jaudiotagger JAR was not selected for releaseValidation"
         }
