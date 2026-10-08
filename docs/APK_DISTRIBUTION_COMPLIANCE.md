@@ -93,21 +93,45 @@ The public `v2.5.1` Release must offer, from the same release download location:
 
 Release notes must prominently identify jaudiotagger 3.0.1 under LGPL-2.1-or-later and these corresponding-source/compliance assets. Keep source assets available for at least as long as the APK is available. `scripts/prepare-apk-compliance-bundle.sh v2.5.1 <output-directory>` packages the source and compliance subset from a clean release tag; attach the production APK separately and regenerate `SHA256SUMS` over the final complete asset set before drafting the Release.
 
+## Relink proof recorded from CI
+
+`.github/workflows/lgpl-relink-validation.yml` completed GREEN on pull request #5 for commit `54052a0`. The earlier local stall during R8 was a limit of an 8 GiB machine, not a relink failure; the same build completes in CI with R8, resource shrinking, ProGuard rules, the native build, and Steam Audio staging all enabled.
+
+| Evidence | Recorded value |
+| --- | --- |
+| Upstream source hash | `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335` at revision `b885903528c63fa8ecf62ab117f7eebe931b6340` |
+| Maven binary / source JAR / POM | `68aa0fe6…`, `d9c79a14…`, `f2978526…` — all verified, and the vendored copies proved byte-identical from a fresh checkout |
+| Stock rebuilt JAR SHA-256 | `6c52bc6b67832ede835e7ca1a3b133f33f58638c9772f8dfe96ef810c22e37b6` |
+| Stock rebuild class set | 606 classes, identical to the audited Maven Central 3.0.1 binary |
+| Modified JAR SHA-256 | `1e4a8ef37f7aad650e0a787992508aab2280e2749ee233f169cdbf0559818d11` (differs from the stock rebuild; class set unchanged) |
+| Override verification | `:app:verifyJaudiotaggerOverride` PASS; 85 runtime artifacts resolved, none from `net.jthink:jaudiotagger` |
+| `releaseValidation` APK | 36,507,034 bytes, SHA-256 `9a6fb9846a97d095823923e6e62ae33b543be75c924ab2d830d2ec00f84e8afa` |
+| R8 | Enabled and completed; the APK is a real minified combined build |
+| Library incorporation | 606 `org.jaudiotagger` classes defined in the APK DEX, and the deterministic modification marker present |
+| APK notice and asset checks | LGPL-2.1, Apache-2.0, MPL-2.0, Public Suffix List, jaudiotagger, runtime, Steam Audio, CIPIC notices and the SHA-256-pinned CIPIC HRTF all verified present |
+| 16 KiB checks | `zipalign -c -P 16` passed; all 12 native ELF `PT_LOAD` segments across armeabi-v7a, arm64-v8a, x86 and x86_64 are 16384-byte aligned |
+| Normal dependency regression | A clean invocation without the property still resolves `net.jthink:jaudiotagger:3.0.1` |
+
+The marker check is required only because the repository's pre-existing `-keep class org.jaudiotagger.** { *; }` rule (already on `main`) guarantees the member survives; no keep rule was added to expose it. The unsigned validation APK is never uploaded or published.
+
+Required result: **MODIFIED JAUDIOTAGGER → MINIFIED FLACTIFY APK RELINK PASS.**
+
 ## Gate status
 
 **BLOCKED pending evidence.** What has been established:
 
 - Repository role guard passes; all work is on `chore/apk-lgpl-compliance`; canonical `origin` only.
-- Shell syntax, ShellCheck, workflow YAML parse, `git diff --check`, Gitleaks, and personal-path scanning are clean. Every `run` block in the relink workflow passes `bash -n` and ShellCheck, and every embedded Python heredoc was parsed and unit-tested against both passing and deliberately-broken inputs.
+- Shell syntax, ShellCheck, workflow YAML parse, `git diff --check`, Gitleaks, and personal-path scanning are clean. Every `run` block in the relink workflow passes `bash -n` and ShellCheck, and every embedded Python heredoc was parsed and unit-tested against both passing and deliberately broken inputs.
 - The audited upstream snapshot hash verifies, the vendored Maven provenance artifacts are byte-identical to Maven Central from a fresh checkout, and a stock rebuild from the upstream source reproduces exactly the 606 production classes of the audited 3.0.1 binary. A deterministic source modification produces a different JAR.
 - `compileDebugKotlin`, `lintDebug`, `:app:verifyJaudiotaggerOverride` with the override property, and a normal `releaseRuntimeClasspath` resolution to `net.jthink:jaudiotagger:3.0.1` all pass locally, confirming the override stays opt-in.
 - **UNRESOLVED RUNTIME LICENSE BLOCKERS = 0.** All 114 resolved runtime modules are classified; see `docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`, which also records the two findings a POM-only audit gets wrong in opposite directions.
+- **The modified-library relink proof is GREEN**; see the evidence table above. On pull request #5 the Android validation, CodeQL `java-kotlin`, CodeQL `c-cpp`, and LGPL relink validation workflows are all GREEN.
 
 What remains outstanding:
 
-- `.github/workflows/lgpl-relink-validation.yml` GREEN: the minified `releaseValidation` APK built from the modified jaudiotagger, with R8, resource shrinking, ProGuard rules, the native build and Steam Audio staging all enabled. This is the heavy proof that could not complete on the 8 GiB local machine, and it is the reason it now runs in CI.
+- Merge of pull request #5, after review.
 - Final signed Release APK inspection: `apksigner verify`, ZIP alignment, native ELF 16 KiB alignment, and a packaged `lib/`/`assets/` reconciliation against the inventory.
-- Fresh-extraction bundle rebuild/relink from `scripts/prepare-apk-compliance-bundle.sh` output.
+- Fresh-extraction bundle rebuild/relink from `scripts/prepare-apk-compliance-bundle.sh` output, generated from the frozen `v2.5.1` tag.
 - Production signing with external signing material, performed outside CI; private keys and passwords are never committed or uploaded.
 - Draft `v2.5.1` Release asset audit.
 

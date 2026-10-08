@@ -85,12 +85,18 @@ jaudiotagger modifications. These statements describe the intended technical
 mechanism; they are not a legal interpretation or certification that every
 redistribution requirement has been met.
 
-**Public APK distribution remains BLOCKED** until the relink test, final APK
-and runtime-license inventory, recipient notices, security checks, signing,
-16 KiB validation, and same-location source/compliance Release assets have all
-passed and been reviewed. See
-[`docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`](docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md);
-that inventory is currently not verified.
+The relink test has now passed on GitHub Actions: the modified library is the
+selected artifact, the minified `releaseValidation` APK is produced, and
+jaudiotagger is confirmed present in DEX. See
+[`docs/APK_DISTRIBUTION_COMPLIANCE.md`](docs/APK_DISTRIBUTION_COMPLIANCE.md)
+for the recorded values. The runtime-license inventory is complete with zero
+unresolved blockers; see
+[`docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`](docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md).
+
+**Public APK distribution remains BLOCKED** until the final signed-APK
+inspection, the same-location source/compliance Release assets generated from
+the frozen tag, and the draft Release asset audit have all passed and been
+reviewed.
 
 ## Steam Audio 4.8.1 — SDK source/build dependency and binary in APK
 
