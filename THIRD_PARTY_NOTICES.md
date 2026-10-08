@@ -40,37 +40,57 @@ closed.
   `68aa0fe601b05df683a843acf6f8d4793ab476f47da1ac3dab57e0b1886b0aee`; its
   source JAR has SHA-256
   `d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858`.
+  The POM SHA-256 is
+  `f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188`; the
+  upstream `license.txt` SHA-256 is
+  `76ac9d645569ea2be48e5aea7b6336835a3fd9d4ef8284c7045bd8c59f6a7a39`.
+  The source JAR, POM, and upstream license notice are retained in
+  [`third_party/jaudiotagger-3.0.1/`](third_party/jaudiotagger-3.0.1/). The
+  canonical upstream v3.0.1 source snapshot is separately verified at commit
+  `b885903528c63fa8ecf62ab117f7eebe931b6340`; its pinned archive SHA-256 is
+  `f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335`.
 - The full LGPL-2.1 text is included at
   [`third_party/licenses/LGPL-2.1.txt`](third_party/licenses/LGPL-2.1.txt).
 - FLACtify does not relicense jaudiotagger. The app build consumes the
   separately resolved Maven dependency; no jaudiotagger JAR is vendored in the
   Git tree.
 
-### LGPL gate before any public APK distribution
+### Selected LGPL distribution mechanism and release gate
 
-The exact legal treatment of the Android APK must be reviewed for this concrete
-packaging. The app resolves jaudiotagger as a JAR and Android build tooling
-packages its bytecode into the APK's DEX output; it is not merely a source-tree
-reference. LGPL-2.1 section 6 for a work that uses a library requires, among
-other things, prominent notice that the library is used, a copy of the license,
-terms permitting modification for the recipient's own use and reverse
-engineering for debugging those modifications, and one of the section 6
-compliance alternatives. Those alternatives include supplying the library's
-complete corresponding machine-readable source and (for an executable) the
-relinkable object code/source for the work that uses it; a suitable shared
-library mechanism that allows a user-installed modified library; or a valid
-written offer (at least three years) to supply the required materials. Section
-6 also addresses equivalent source access and verification when distribution
-is offered from a download location. The complete applicable requirements must
-be assessed against the final APK, build/relinkability, user terms, notices and
-distribution method by the distributor; this notice is not a legal
-interpretation that those requirements have been met.
+FLACtify selects the LGPL-2.1 section 6(a)/(d) route: make jaudiotagger's
+complete corresponding machine-readable source and FLACtify's complete
+corresponding source/build materials needed to rebuild with a modified
+jaudiotagger available from the **same GitHub Release/download location** as the
+APK. The project does not rely on Android replaceable shared-library loading or
+a three-year written offer. See
+[`docs/APK_DISTRIBUTION_COMPLIANCE.md`](docs/APK_DISTRIBUTION_COMPLIANCE.md)
+and [`docs/LGPL-COMPLIANCE.md`](docs/LGPL-COMPLIANCE.md) for the technical
+mechanism and recipient instructions.
 
-No APK compliance package, relinkable application materials, suitable
-replaceable shared-library arrangement, written offer, or final recipient
-notice has been approved in this phase. Therefore: **Public source repository
-may proceed; public APK distribution remains BLOCKED pending LGPL APK
-distribution compliance.**
+Normal builds continue to resolve `net.jthink:jaudiotagger:3.0.1`. An
+opt-in `flactifyJaudiotaggerJar` Gradle property provides the replacement route.
+The complete corresponding source package is based on the full `src/` tree and
+build metadata from the verified upstream v3.0.1 tag, plus an explicit `javac`
+build script; the Maven source JAR and exact POM are supplemental artifact
+provenance, not the sole source. The packager verifies the pinned upstream
+snapshot hash and includes the source tree in the same-location release bundle.
+The test must modify that source tree, rebuild a different JAR, verify the
+selected Gradle artifact, and prove the marker is in the releaseValidation DEX;
+a normal Maven build is not evidence of relinkability.
+
+The APK includes a jaudiotagger notice and complete LGPL-2.1 text in assets,
+and Settings exposes an Open-source licenses screen. No FLACtify EULA is
+provided that prohibits modification or reverse engineering for debugging
+jaudiotagger modifications. These statements describe the intended technical
+mechanism; they are not a legal interpretation or certification that every
+redistribution requirement has been met.
+
+**Public APK distribution remains BLOCKED** until the relink test, final APK
+and runtime-license inventory, recipient notices, security checks, signing,
+16 KiB validation, and same-location source/compliance Release assets have all
+passed and been reviewed. See
+[`docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`](docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md);
+that inventory is currently not verified.
 
 ## Steam Audio 4.8.1 — SDK source/build dependency and binary in APK
 
@@ -130,10 +150,21 @@ as an APK asset; a shortened project summary is not a replacement for it.
   and the full Steam Audio third-party notice in the APK. No public-domain or
   specific CIPIC Release 1.0 lineage claim is made here.
 
-## Build-time tooling and other dependencies
+## Android runtime dependency notice
 
-Other Gradle dependencies are resolved as build dependencies; this document
-focuses on the components identified for actual material redistribution or
-material incorporation above. Their respective upstream license metadata and
-notices govern those components and are not changed by FLACtify's project
-license. Review the complete dependency inventory before any APK release.
+The runtime graph also includes Kotlin, AndroidX, Compose, Media3, Coil,
+OkHttp/Okio, Accompanist, Guava, and related transitive libraries. The debug APK
+contains `licenses/Apache-2.0.txt` (SHA-256
+`cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`) and
+`licenses/RUNTIME-DEPENDENCIES-NOTICE.txt`. The same terms and component
+inventory are exposed by Settings → Open-source licenses. The complete resolved
+runtime graph is in
+[`docs/RELEASE_RUNTIME_DEPENDENCIES.txt`](docs/RELEASE_RUNTIME_DEPENDENCIES.txt);
+recipient-facing classification and the remaining final-APK audit are in
+[`docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md`](docs/RUNTIME_DEPENDENCY_LICENSE_INVENTORY.md).
+
+Build-only tools and test/debug-scoped dependencies are classified separately
+in that inventory and are not intended to be included in Release runtime. The
+final `releaseValidation` and signed APK must still be inspected before claiming
+that every runtime notice is present or that no additional copyleft obligation
+exists.
