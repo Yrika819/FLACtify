@@ -3,6 +3,8 @@ package com.flactify.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,7 +48,18 @@ fun SettingsScreen(
         mutableStateOf(spatialHrtfMixPercent.toFloat())
     }
     val context = LocalContext.current
+    val jaudiotaggerLicense = remember(context) {
+        runCatching {
+            context.assets.open("licenses/LGPL-2.1.txt").bufferedReader().use { it.readText() }
+        }.getOrElse { "The LGPL-2.1 license text is unavailable." }
+    }
+    val apacheLicense = remember(context) {
+        runCatching {
+            context.assets.open("licenses/Apache-2.0.txt").bufferedReader().use { it.readText() }
+        }.getOrElse { "The Apache-2.0 license text is unavailable." }
+    }
 
+    var showLicenseDialog by remember { mutableStateOf(false) }
     var showCacheDialog by remember { mutableStateOf(false) }
     var recoveryEntries by remember { mutableStateOf(emptyList<TagRecoveryManager.Entry>()) }
     var pendingExport by remember { mutableStateOf<TagRecoveryManager.Entry?>(null) }
@@ -203,8 +216,8 @@ fun SettingsScreen(
                     valueRange = 0f..100f,
                     steps = 19,
                     enabled = spatialAudioMode ==
-                        com.flactify.audio.spatial.SpatialAudioMode.STUDIO &&
-                        !isChangingSpatialAudioMode,
+                            com.flactify.audio.spatial.SpatialAudioMode.STUDIO &&
+                            !isChangingSpatialAudioMode,
                     colors = SliderDefaults.colors(
                         thumbColor = Color(0xFF1DB954),
                         activeTrackColor = Color(0xFF1DB954),
@@ -431,7 +444,46 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            item {
+                SettingsSectionHeader("About & licenses")
+                TextButton(onClick = { showLicenseDialog = true }) {
+                    Text("Open-source licenses", color = Color.White)
+                }
+            }
         }
+    }
+
+    if (showLicenseDialog) {
+        AlertDialog(
+            onDismissRequest = { showLicenseDialog = false },
+            containerColor = Color(0xFF1E1E1E),
+            title = { Text("Third-party licenses", color = Color.White) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "jaudiotagger 3.0.1\nCopyright (C) 2015 Paul Taylor\nLicensed under the GNU Lesser General Public License, version 2.1 or (at your option) any later version.\n\n",
+                        color = Color.White
+                    )
+                    Text(jaudiotaggerLicense, color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                    Spacer(Modifier.height(20.dp))
+                    Text(
+                        "AndroidX, Jetpack Compose, Media3, Coil, OkHttp/Okio, Kotlin runtime, Guava and related runtime libraries use Apache License 2.0.",
+                        color = Color.White
+                    )
+                    Text(apacheLicense, color = Color(0xCCFFFFFF), fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLicenseDialog = false }) {
+                    Text("Close", color = Color(0xFF1DB954))
+                }
+            }
+        )
     }
 
     pendingDelete?.let { entry ->

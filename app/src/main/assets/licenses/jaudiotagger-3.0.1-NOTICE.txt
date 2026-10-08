@@ -1,0 +1,6 @@
+jaudiotagger 3.0.1
+Copyright (C) 2015 Paul Taylor
+
+This application uses jaudiotagger, distributed under the GNU Lesser General Public License, version 2.1 or (at your option) any later version (LGPL-2.1-or-later).
+
+The complete license text is available in LGPL-2.1.txt. Corresponding source and the materials to rebuild and replace the library are provided with the FLACtify release download.
