@@ -1,0 +1,11 @@
+FLACtify runtime dependency notices
+
+The runtime dependency graph includes AndroidX, Jetpack Compose, Media3, Coil, OkHttp/Okio, Kotlin runtime, Guava and other transitive libraries. Their applicable third-party terms remain with those components; the AndroidX/Compose/Media3/Coil/OkHttp/Okio/Kotlin/Guava components identified in the Phase 5.8 runtime inventory are distributed under Apache License 2.0. The complete Apache License 2.0 text is in Apache-2.0.txt.
+
+OkHttp additionally ships Public Suffix List data compiled from the Public Suffix List project, which is licensed under the Mozilla Public License 2.0. The MPL-2.0 text is in MPL-2.0.txt and the attribution and corresponding-source pointer are in PUBLIC-SUFFIX-LIST-NOTICE.txt. No other runtime component is copyleft.
+
+The app also redistributes net.jthink:jaudiotagger:3.0.1 under LGPL-2.1-or-later. Its attribution is in jaudiotagger-3.0.1-NOTICE.txt and the full license is in LGPL-2.1.txt.
+
+Steam Audio 4.8.1 and its bundled third-party components have separate attribution/terms in steam-audio-4.8.1-LICENSE.md and the exact upstream steam-audio-4.8.1-THIRDPARTY.md. CIPIC subject 124 attribution and terms are in CIPIC-124-HRTF-NOTICE.md.
+
+See the recipient-facing THIRD_PARTY_NOTICES.md accompanying the public release for the component/source and distribution inventory. This notice is technical project documentation, not legal certification.

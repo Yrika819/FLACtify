@@ -1,0 +1,8 @@
+# Vendored upstream artifacts are redistributed byte-for-byte and are pinned by
+# SHA-256 in docs/APK_DISTRIBUTION_COMPLIANCE.md and verified by
+# scripts/prepare-apk-compliance-bundle.sh. Any EOL normalization (for example
+# core.autocrlf=input converting the upstream CRLF POM to LF) would break those
+# pinned hashes for every recipient, so keep these paths untransformed.
+third_party/jaudiotagger-3.0.1/jaudiotagger-3.0.1.pom -text
+third_party/jaudiotagger-3.0.1/jaudiotagger-3.0.1-sources.jar -text
+third_party/jaudiotagger-3.0.1/license.txt -text

@@ -1,0 +1,33 @@
+Public Suffix List notice
+=========================
+
+FLACtify redistributes the Public Suffix List data indirectly, through
+OkHttp 4.12.0.
+
+OkHttp ships the resource okhttp3/internal/publicsuffix/publicsuffixes.gz, which is
+compiled from The Public Suffix List maintained by the Public Suffix List project.
+OkHttp's own packaged notice (okhttp3/internal/publicsuffix/NOTICE) records:
+
+    Note that publicsuffixes.gz is compiled from The Public Suffix List:
+    https://publicsuffix.org/list/public_suffix_list.dat
+
+    It is subject to the terms of the Mozilla Public License, v. 2.0:
+    https://mozilla.org/MPL/2.0/
+
+The Public Suffix List is therefore distributed under the Mozilla Public License
+Version 2.0. The complete MPL-2.0 text is included as MPL-2.0.txt in this
+licenses directory.
+
+The corresponding source for the Public Suffix List data is the plain-text list
+itself, available at:
+
+    https://publicsuffix.org/list/public_suffix_list.dat
+
+FLACtify does not modify the Public Suffix List data. MPL-2.0 is a file-level
+copyleft license: it does not place any obligation on FLACtify's own code or on
+the other libraries distributed in the APK. Its effect here is limited to
+providing this attribution, the license copy, and a pointer to the corresponding
+source, as described in MPL-2.0 section 3.2.
+
+The rest of OkHttp is distributed under the Apache License, Version 2.0; see
+Apache-2.0.txt and RUNTIME-DEPENDENCIES-NOTICE.txt.
