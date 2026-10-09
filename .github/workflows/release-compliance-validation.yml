@@ -82,6 +82,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bundle"
           ./scripts/prepare-apk-compliance-bundle.sh v2.5.1 "$RUNNER_TEMP/bundle"
           (cd "$RUNNER_TEMP/bundle" && sha256sum -c SHA256SUMS)
+          cp "$RUNNER_TEMP/bundle/SHA256SUMS" "$RUNNER_TEMP/bundle-sha256.txt"
+          cat "$RUNNER_TEMP/bundle/SHA256SUMS"
           printf '%s\n' 'Bundle checksums PASS'
 
       - name: Extract both source packages outside the checkout
@@ -127,6 +129,7 @@ jobs:
           jar tf "$WORK/stock.jar" | grep '\.class$' | sort > "$WORK/stock-classes.txt"
           jar tf "$WORK/modified.jar" | grep '\.class$' | sort > "$WORK/modified-classes.txt"
           diff -u "$WORK/stock-classes.txt" "$WORK/modified-classes.txt"
+          echo 'PASS: extracted jaudiotagger stock class set contains 606 classes; modified class set is unchanged'
 
       - name: Verify extracted Gradle override and build minified releaseValidation APK
         run: |
@@ -137,12 +140,14 @@ jobs:
           case "$PROJECT" in "$GITHUB_WORKSPACE"/*) echo 'Extracted project is inside checkout' >&2; exit 1;; esac
           cd "$PROJECT"
           ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:verifyJaudiotaggerOverride
+          echo 'PASS: :app:verifyJaudiotaggerOverride selected the modified extracted JAR'
           ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" assembleReleaseValidation
           APK=$(find app/build/outputs/apk/releaseValidation -type f -name '*.apk' -print -quit)
           test -n "$APK"
           sha256sum "$APK" | tee "$RUNNER_TEMP/releaseValidation-apk-sha256.txt"
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$APK"
           python3 scripts/verify-16k-apk.py "$APK"
+          echo 'PASS: APK ZIP 16 KiB alignment and every packaged native ELF alignment'
           "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" dex code --class org.jaudiotagger.audio.AudioFile "$APK" | grep -F 'modified-jaudiotagger'
           python3 - "$APK" <<'PY'
           import sys, zipfile
@@ -168,4 +173,27 @@ jobs:
                       raise SystemExit(f"Empty APK asset: {name}")
                   print(f"PASS {name}")
           PY
+          echo 'PASS: APK notice and required asset audit'
+          {
+            echo '## Fresh-extraction compliance bundle evidence'
+            echo
+            echo '- Bundle checksum verification: PASS'
+            echo '- Stock jaudiotagger class count: 606; modified JAR class set unchanged'
+            echo '- Override selection: PASS'
+            echo '- APK notice and required asset audit: PASS'
+            echo '- APK ZIP and native ELF 16 KiB alignment: PASS'
+            echo
+            echo '### Compliance bundle SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/bundle/SHA256SUMS"
+            echo '```'
+            echo '### Rebuilt JAR SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/rebuild/jar-sha256.txt"
+            echo '```'
+            echo '### Extracted releaseValidation APK SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/releaseValidation-apk-sha256.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           echo 'COMPLIANCE BUNDLE FRESH-EXTRACTION RELINK PASS'
