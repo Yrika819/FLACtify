@@ -1,0 +1,199 @@
+name: Compliance bundle fresh-extraction validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-compliance-validation.yml'
+      - '.gitattributes'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'docs/LGPL-COMPLIANCE.md'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'scripts/build-jaudiotagger.sh'
+      - 'scripts/prepare-apk-compliance-bundle.sh'
+      - 'settings.gradle.kts'
+      - 'third_party/**'
+      - 'THIRD_PARTY_NOTICES.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-compliance-validation.yml'
+      - '.gitattributes'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'docs/LGPL-COMPLIANCE.md'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'scripts/build-jaudiotagger.sh'
+      - 'scripts/prepare-apk-compliance-bundle.sh'
+      - 'settings.gradle.kts'
+      - 'third_party/**'
+      - 'THIRD_PARTY_NOTICES.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-compliance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-extraction:
+    name: Fresh-extraction compliance bundle relink
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify public repository identity
+        run: ./scripts/verify-repo-role.sh
+
+      - name: Set up JDK
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK prerequisites
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.31.6"
+
+      - name: Generate exact-version compliance bundle under temporary local tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git tag v2.5.1 "$EXPECTED_SHA"
+          test "$(git rev-parse 'v2.5.1^{commit}')" = "$EXPECTED_SHA"
+          mkdir -p "$RUNNER_TEMP/bundle"
+          ./scripts/prepare-apk-compliance-bundle.sh v2.5.1 "$RUNNER_TEMP/bundle"
+          (cd "$RUNNER_TEMP/bundle" && sha256sum -c SHA256SUMS)
+          cp "$RUNNER_TEMP/bundle/SHA256SUMS" "$RUNNER_TEMP/bundle-sha256.txt"
+          cat "$RUNNER_TEMP/bundle/SHA256SUMS"
+          printf '%s\n' 'Bundle checksums PASS'
+
+      - name: Extract both source packages outside the checkout
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/fresh-extraction"
+          mkdir -p "$OUT/flactify" "$OUT/jaudiotagger"
+          tar -xzf "$RUNNER_TEMP/bundle/FLACtify-v2.5.1-source.tar.gz" -C "$OUT/flactify"
+          tar -xzf "$RUNNER_TEMP/bundle/jaudiotagger-3.0.1-complete-source.tar.gz" -C "$OUT/jaudiotagger"
+          test -f "$OUT/flactify/FLACtify-v2.5.1-source/gradlew"
+          test -f "$OUT/jaudiotagger/upstream/src/org/jaudiotagger/audio/AudioFile.java"
+          case "$OUT" in "$GITHUB_WORKSPACE"/*) echo 'Extraction is inside checkout' >&2; exit 1;; esac
+          echo "$OUT" > "$RUNNER_TEMP/extraction-root.txt"
+
+      - name: Rebuild stock and modified jaudiotagger from extracted source
+        run: |
+          set -euo pipefail
+          OUT=$(cat "$RUNNER_TEMP/extraction-root.txt")
+          PROJECT="$OUT/flactify/FLACtify-v2.5.1-source"
+          LIB="$OUT/jaudiotagger"
+          WORK="$RUNNER_TEMP/rebuild"
+          mkdir -p "$WORK"
+          "$PROJECT/scripts/build-jaudiotagger.sh" "$LIB/upstream/src" "$WORK/stock.jar"
+          test "$(jar tf "$WORK/stock.jar" | grep -c '\.class$')" -eq 606
+          cp -R "$LIB/upstream/src" "$WORK/modified-src"
+          python3 - "$WORK/modified-src/org/jaudiotagger/audio/AudioFile.java" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+          needle = "public class AudioFile\n{"
+          replacement = needle + '\n    public static final String FLACTIFY_RELINK_PROOF = "modified-jaudiotagger";'
+          if source.count(needle) != 1:
+              raise SystemExit("Expected one AudioFile class declaration")
+          path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+          PY
+          "$PROJECT/scripts/build-jaudiotagger.sh" "$WORK/modified-src" "$WORK/modified.jar"
+          sha256sum "$WORK/stock.jar" "$WORK/modified.jar" | tee "$WORK/jar-sha256.txt"
+          if cmp -s "$WORK/stock.jar" "$WORK/modified.jar"; then
+            echo 'Modified jaudiotagger JAR unexpectedly matches stock JAR' >&2
+            exit 1
+          fi
+          jar tf "$WORK/stock.jar" | grep '\.class$' | sort > "$WORK/stock-classes.txt"
+          jar tf "$WORK/modified.jar" | grep '\.class$' | sort > "$WORK/modified-classes.txt"
+          diff -u "$WORK/stock-classes.txt" "$WORK/modified-classes.txt"
+          echo 'PASS: extracted jaudiotagger stock class set contains 606 classes; modified class set is unchanged'
+
+      - name: Verify extracted Gradle override and build minified releaseValidation APK
+        run: |
+          set -euo pipefail
+          OUT=$(cat "$RUNNER_TEMP/extraction-root.txt")
+          PROJECT="$OUT/flactify/FLACtify-v2.5.1-source"
+          MODIFIED="$RUNNER_TEMP/rebuild/modified.jar"
+          case "$PROJECT" in "$GITHUB_WORKSPACE"/*) echo 'Extracted project is inside checkout' >&2; exit 1;; esac
+          cd "$PROJECT"
+          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" :app:verifyJaudiotaggerOverride
+          echo 'PASS: :app:verifyJaudiotaggerOverride selected the modified extracted JAR'
+          ./gradlew -PflactifyJaudiotaggerJar="$MODIFIED" assembleReleaseValidation
+          APK=$(find app/build/outputs/apk/releaseValidation -type f -name '*.apk' -print -quit)
+          test -n "$APK"
+          sha256sum "$APK" | tee "$RUNNER_TEMP/releaseValidation-apk-sha256.txt"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$APK"
+          python3 scripts/verify-16k-apk.py "$APK"
+          echo 'PASS: APK ZIP 16 KiB alignment and every packaged native ELF alignment'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" dex code --class org.jaudiotagger.audio.AudioFile "$APK" | grep -F 'modified-jaudiotagger'
+          python3 - "$APK" <<'PY'
+          import sys, zipfile
+          required = {
+              "assets/licenses/LGPL-2.1.txt": "GNU LESSER GENERAL PUBLIC LICENSE",
+              "assets/licenses/jaudiotagger-3.0.1-NOTICE.txt": "jaudiotagger",
+              "assets/licenses/MPL-2.0.txt": "Mozilla Public License Version 2.0",
+              "assets/licenses/PUBLIC-SUFFIX-LIST-NOTICE.txt": "publicsuffix.org/list/public_suffix_list.dat",
+              "assets/licenses/steam-audio-4.8.1-LICENSE.md": "",
+              "assets/licenses/steam-audio-4.8.1-THIRDPARTY.md": "Steam Audio Third-Party Licenses",
+              "assets/licenses/CIPIC-124-HRTF-NOTICE.md": "The Regents of the University of California",
+              "assets/hrtf/cipic_124.sofa": "",
+          }
+          with zipfile.ZipFile(sys.argv[1]) as apk:
+              names = set(apk.namelist())
+              for name, marker in required.items():
+                  if name not in names:
+                      raise SystemExit(f"Missing APK asset: {name}")
+                  data = apk.read(name)
+                  if marker and marker.encode() not in data:
+                      raise SystemExit(f"Required text missing from APK asset: {name}")
+                  if not data:
+                      raise SystemExit(f"Empty APK asset: {name}")
+                  print(f"PASS {name}")
+          PY
+          echo 'PASS: APK notice and required asset audit'
+          {
+            echo '## Fresh-extraction compliance bundle evidence'
+            echo
+            echo '- Bundle checksum verification: PASS'
+            echo '- Stock jaudiotagger class count: 606; modified JAR class set unchanged'
+            echo '- Override selection: PASS'
+            echo '- APK notice and required asset audit: PASS'
+            echo '- APK ZIP and native ELF 16 KiB alignment: PASS'
+            echo
+            echo '### Compliance bundle SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/bundle/SHA256SUMS"
+            echo '```'
+            echo '### Rebuilt JAR SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/rebuild/jar-sha256.txt"
+            echo '```'
+            echo '### Extracted releaseValidation APK SHA-256'
+            echo '```text'
+            cat "$RUNNER_TEMP/releaseValidation-apk-sha256.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'COMPLIANCE BUNDLE FRESH-EXTRACTION RELINK PASS'
