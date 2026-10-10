@@ -122,6 +122,120 @@ class PlaybackControllerTest {
         assertTrue(idleReported)
     }
 
+    @Test
+    fun `setPlaylist skips rebuild when the requested queue is already loaded identically`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        val controller = newController(player)
+
+        controller.setPlaylist(tracks, { "flac" }, { "audio/flac" }, forceRandom = false, resolveTargetIndex = { _, _, _ -> 0 })
+
+        verify(exactly = 0) { player.clearMediaItems() }
+        verify(exactly = 0) { player.addMediaItems(any<List<androidx.media3.common.MediaItem>>()) }
+        verify(exactly = 0) { player.prepare() }
+        verify(exactly = 0) { player.seekTo(any<Int>(), any<Long>()) }
+    }
+
+    @Test
+    fun `setPlaylist still applies explicit shuffle and repeat on an identical queue`() {
+        val tracks = listOf(track("One", "content://one"))
+        val player = mediaControllerWithQueue(tracks)
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 },
+            restoreShuffle = true, restoreRepeat = Player.REPEAT_MODE_ALL
+        )
+
+        verify(exactly = 1) { player.shuffleModeEnabled = true }
+        verify(exactly = 1) { player.repeatMode = Player.REPEAT_MODE_ALL }
+        verify(exactly = 0) { player.clearMediaItems() }
+        verify(exactly = 0) { player.prepare() }
+    }
+
+    @Test
+    fun `setPlaylist rebuilds once when a track is added`() {
+        val initial = listOf(track("One", "content://one"))
+        val player = mediaControllerWithQueue(initial)
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            initial + track("Two", "content://two"),
+            { "flac" }, { "audio/flac" }, forceRandom = false, resolveTargetIndex = { _, _, _ -> 0 }
+        )
+
+        verify(exactly = 1) { player.clearMediaItems() }
+        verify(exactly = 1) { player.addMediaItems(any<List<androidx.media3.common.MediaItem>>()) }
+        verify(exactly = 1) { player.prepare() }
+    }
+
+    @Test
+    fun `setPlaylist rebuilds when only the metadata changes at the same count`() {
+        val loaded = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(loaded)
+        val controller = newController(player)
+
+        // Same URIs and order, but the first title was edited in place.
+        val relabelled = listOf(track("One (remastered)", "content://one"), track("Two", "content://two"))
+        controller.setPlaylist(relabelled, { "flac" }, { "audio/flac" }, forceRandom = false, resolveTargetIndex = { _, _, _ -> 0 })
+
+        verify(exactly = 1) { player.clearMediaItems() }
+        verify(exactly = 1) { player.prepare() }
+    }
+
+    @Test
+    fun `setPlaylist rebuilds when a single track is swapped at the same count`() {
+        val loaded = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(loaded)
+        val controller = newController(player)
+
+        val swapped = listOf(track("One", "content://one"), track("Elsewhere", "content://elsewhere"))
+        controller.setPlaylist(swapped, { "flac" }, { "audio/flac" }, forceRandom = false, resolveTargetIndex = { _, _, _ -> 0 })
+
+        verify(exactly = 1) { player.clearMediaItems() }
+        verify(exactly = 1) { player.prepare() }
+    }
+
+    private fun newController(player: MediaController): PlaybackController {
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { _, _ -> }
+        )
+        setPlayer(controller, player)
+        return controller
+    }
+
+    private fun mediaControllerWithQueue(tracks: List<TrackData>): MediaController {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.currentMediaItem } returns null
+        every { player.isPlaying } returns false
+        every { player.mediaItemCount } returns tracks.size
+        tracks.forEachIndexed { index, data ->
+            every { player.getMediaItemAt(index) } returns mediaItemFor(data)
+        }
+        return player
+    }
+
+    private fun mediaItemFor(data: TrackData): androidx.media3.common.MediaItem =
+        androidx.media3.common.MediaItem.Builder()
+            .setMediaId(data.uri.toString())
+            .setUri(data.uri)
+            .setMimeType("audio/flac")
+            .setMediaMetadata(
+                androidx.media3.common.MediaMetadata.Builder()
+                    .setTitle(data.title)
+                    .setArtist(data.artist)
+                    .setAlbumTitle(data.album)
+                    .build()
+            )
+            .build()
+
     private fun setPlayer(controller: PlaybackController, player: MediaController) {
         setPrivateField(controller, "player", player)
     }
