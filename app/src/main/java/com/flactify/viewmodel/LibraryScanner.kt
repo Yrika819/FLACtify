@@ -44,7 +44,8 @@ class LibraryScanner(
         context: Context,
         folderUri: Uri,
         cachedTracks: List<TrackData>,
-        onProgress: (LibraryScanProgress) -> Unit = {}
+        onProgress: (LibraryScanProgress) -> Unit = {},
+        shouldPersist: () -> Boolean = { true }
     ): LibraryScanResult = withContext(Dispatchers.IO) {
         val root = try {
             DocumentFile.fromTreeUri(context, folderUri)
@@ -77,7 +78,7 @@ class LibraryScanner(
         }
         if (files.isEmpty()) {
             val changed = cachedTracks.isNotEmpty()
-            saveCache(context, folderUri, emptyList())
+            if (shouldPersist()) saveCache(context, folderUri, emptyList())
             return@withContext LibraryScanResult(emptyList(), files, changed)
         }
 
@@ -250,7 +251,7 @@ class LibraryScanner(
             )
         }
         val libraryChanged = hasChanges || cachedTracks.size != newParsedTracks.size || cachedTracks.isEmpty()
-        if (libraryChanged) saveCache(context, folderUri, newParsedTracks)
+        if (libraryChanged && shouldPersist()) saveCache(context, folderUri, newParsedTracks)
         LibraryScanResult(newParsedTracks, files, libraryChanged)
     }
 

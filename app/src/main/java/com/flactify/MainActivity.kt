@@ -35,6 +35,7 @@ import com.flactify.ui.LibraryScreen
 import com.flactify.ui.PlayerScreen
 import com.flactify.ui.SettingsScreen
 import com.flactify.viewmodel.PlayerViewModel
+import com.flactify.viewmodel.StartupState
 import androidx.compose.animation.core.animateFloatAsState
 import kotlinx.coroutines.delay
 
@@ -57,13 +58,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val isDataReady by viewModel.isReady.collectAsState()
+            val startupState by viewModel.startupState.collectAsState()
             val currentThemeColor by viewModel.themeColor.collectAsState()
 
             var currentScreen by remember { mutableStateOf("splash") }
 
-    // 🚀 【サクサク起動】データ準備完了後、100msだけロゴを見せて即遷移
-            LaunchedEffect(isDataReady) {
-                if (isDataReady) {
+            // 🚀 【サクサク起動】キャッシュから復元できた時点／検証が始まった時点でスプラッシュを終える。
+            // 以前はライブラリ全走査の完了(isReady)までスプラッシュを引っ張っていたが、キャッシュ復元後は
+            // 即座にプレイヤーを表示し、フォルダ検証はバックグラウンドで続行する。キャッシュが無い初回も
+            // ロゴのまま全走査を待たせず、読み込み中のプレイヤーを先に出す。
+            val leaveSplash = isDataReady || startupState !is StartupState.Initializing
+            LaunchedEffect(leaveSplash) {
+                if (leaveSplash) {
                     delay(100)
                     currentScreen = "player"
                 }
