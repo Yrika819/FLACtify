@@ -77,7 +77,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          git tag v2.5.1 "$EXPECTED_SHA"
+          # fetch-depth: 0 can already contain the published v2.5.1 release tag; re-point it at the
+          # exact revision under test so tagging is idempotent. The checksum/relink steps below are
+          # unchanged, so this only fixes tag setup and does not weaken the compliance proof.
+          git tag -f v2.5.1 "$EXPECTED_SHA"
           test "$(git rev-parse 'v2.5.1^{commit}')" = "$EXPECTED_SHA"
           mkdir -p "$RUNNER_TEMP/bundle"
           ./scripts/prepare-apk-compliance-bundle.sh v2.5.1 "$RUNNER_TEMP/bundle"

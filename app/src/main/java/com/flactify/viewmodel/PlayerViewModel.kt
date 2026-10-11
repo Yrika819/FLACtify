@@ -26,6 +26,7 @@ import com.flactify.audio.PlaybackDiagnosticsBus
 import com.flactify.audio.SourceAudioInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -36,6 +37,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.google.common.util.concurrent.MoreExecutors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Startup lifecycle for the cache-first library restore.
+ *
+ * The library is only authoritative once [Ready] is reached, after a validation scan completes.
+ * [CacheRestored] means the previous library is being shown immediately from cache so the splash
+ * can end, but it is still provisional until validation confirms the folder and the files.
+ * [Validating] is the first-launch / no-cache path where there is nothing to show yet.
+ * [Error] keeps whatever provisional library is on screen and surfaces the failure.
+ */
+sealed interface StartupState {
+    data object Initializing : StartupState
+    data class Validating(val provisionalTrackCount: Int) : StartupState
+    data class CacheRestored(val provisionalTrackCount: Int) : StartupState
+    data object Ready : StartupState
+    data class Error(val message: String, val keptProvisionalLibrary: Boolean) : StartupState
+}
 
 // 🚀 【データクラス】重複比較ができるように equals/hashCode を明示的にオーバーライド
 data class TrackData(
@@ -88,6 +108,18 @@ class PlayerViewModel : ViewModel() {
 
     private val _isReady = MutableStateFlow(false)
     val isReady: StateFlow<Boolean> = _isReady
+
+    private val _startupState = MutableStateFlow<StartupState>(StartupState.Initializing)
+    val startupState: StateFlow<StartupState> = _startupState
+
+    // Every library intention (startup restore, folder switch) takes a generation. A result that
+    // arrives under an older generation must never overwrite the library, the saved cache or the
+    // player queue of a newer intention.
+    private val libraryGeneration = AtomicLong(0L)
+    // Reference count so a cancelled scan's finally block cannot clear the indicator of a newer
+    // scan that is still running.
+    private val activeScanCount = AtomicInteger(0)
+    private var validateJob: Job? = null
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -285,7 +317,7 @@ class PlayerViewModel : ViewModel() {
             _canEditMetadata.value = hasPersistedWritePermission(appContext, Uri.parse(folderUriString))
         }
 
-        viewModelScope.launch(Dispatchers.IO) {
+        preloadJob = viewModelScope.launch(Dispatchers.IO) {
             val lastUriStr = sharedPreferences?.getString("last_uri", null)
             val lastUri = lastUriStr?.let { Uri.parse(it) }
             val cached = try {
@@ -353,10 +385,20 @@ class PlayerViewModel : ViewModel() {
                     updateTrackDetails(appContext, null)
                 }
                 val lastUriStr = sharedPreferences?.getString("last_uri", null)
-                if (lastUriStr != null) loadDirectory(appContext, Uri.parse(lastUriStr))
-                else _isReady.value = true
+                if (lastUriStr != null) {
+                    // Startup restore: show the cached library immediately, then validate.
+                    restoreStartupLibrary(appContext, Uri.parse(lastUriStr))
+                } else {
+                    // No folder has ever been selected; nothing to scan or restore.
+                    _startupState.value = StartupState.Ready
+                    _isReady.value = true
+                }
             },
-            onFailure = { _isReady.value = true }
+            onFailure = {
+                // The player is unavailable, so the user only sees local library state.
+                _startupState.value = StartupState.Error("プレイヤーに接続できませんでした", false)
+                _isReady.value = true
+            }
         )
     }
 
@@ -528,63 +570,193 @@ class PlayerViewModel : ViewModel() {
     }
 
 
-    // 🏎💨 キャッシュ優先表示とバックグラウンド差分同期
+    // 🏎💨 フォルダ切り替え（ユーザー操作）。正式なライブラリはこのスキャンが成功して初めて切り替わる。
     fun loadDirectory(context: Context, uri: Uri) {
-        val appContext = context.applicationContext
+        // A new folder intention supersedes any in-flight folder switch or startup validation.
+        validateJob?.cancel()
+        validateJob = null
         scanJob?.cancel()
         scanJob = viewModelScope.launch {
-            try {
-                _isScanningArtists.value = true
-                _scanTotal.value = 0
-                _scanCompleted.value = 0
-                _scanCurrentFile.value = ""
-                _scanFailures.value = emptyList()
+            performDirectoryLoad(context.applicationContext, uri)
+        }
+    }
 
-                // Requesting a persistable grant is not a folder switch. Keep the previous
-                // library, queue, URI and edit capability until the requested tree scans.
-                persistFolderPermission(appContext, uri)
-                val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
-                val cachedTracks = cachedSnapshot
-                    ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
-                    ?.tracks
-                    .orEmpty()
-                val result = (libraryScanner ?: LibraryScanner(metadataExtractor)).scan(
-                    appContext, uri, cachedTracks
-                ) { progress ->
-                    _scanTotal.value = progress.total
-                    _scanCompleted.value = progress.completed
-                    _scanCurrentFile.value = progress.currentFile
-                    _scanFailures.value = progress.failedFiles
-                }
-                if (!result.scanSucceeded) {
-                    _scanFailures.value = result.failedFiles.ifEmpty {
-                        listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
-                    }
-                    _isReady.value = true
-                    return@launch
-                }
+    /**
+     * The folder-switch body, extracted so it can be driven deterministically from tests without a
+     * leaked [viewModelScope] coroutine (which leaves an active SupervisorJob that [runTest] waits
+     * on). [loadDirectory] is a thin launcher around this.
+     */
+    internal suspend fun performDirectoryLoad(appContext: Context, uri: Uri) {
+        val generation = libraryGeneration.incrementAndGet()
+        beginScanIndicator()
+        try {
+            _scanTotal.value = 0
+            _scanCompleted.value = 0
+            _scanCurrentFile.value = ""
+            _scanFailures.value = emptyList()
 
-                val tracks = result.tracks
-                updateLibraryState(tracks)
-                withContext(Dispatchers.Main) {
-                    setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+            // Requesting a persistable grant is not a folder switch. Keep the previous
+            // library, queue, URI and edit capability until the requested tree scans.
+            persistFolderPermission(appContext, uri)
+            val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
+            val cachedTracks = cachedSnapshot
+                ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
+                ?.tracks
+                .orEmpty()
+            val result = scanner().scan(
+                appContext, uri, cachedTracks,
+                onProgress = { progress ->
+                    if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                },
+                shouldPersist = { libraryGeneration.get() == generation }
+            )
+            if (libraryGeneration.get() != generation) return
+            if (!result.scanSucceeded) {
+                _scanFailures.value = result.failedFiles.ifEmpty {
+                    listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
                 }
-                sharedPreferences?.edit()?.putString("last_uri", uri.toString())?.apply()
-                _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
-                currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
-                _preloadedCache.complete(currentCacheSnapshot)
-                _scanFailures.value = result.failedFiles
                 _isReady.value = true
-            } finally {
-                _isScanningArtists.value = false
+                return
             }
+
+            val tracks = result.tracks
+            updateLibraryState(tracks)
+            withContext(Dispatchers.Main) {
+                setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+            }
+            sharedPreferences?.edit()?.putString("last_uri", uri.toString())?.apply()
+            _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+            _preloadedCache.complete(currentCacheSnapshot)
+            _scanFailures.value = result.failedFiles
+            _isReady.value = true
+        } finally {
+            endScanIndicator()
+        }
+    }
+
+    /**
+     * Cache-first startup restore for the persisted folder. Unlike [loadDirectory] this never
+     * treats the result as a folder switch: it first shows the cached library so the splash can
+     * end, then validates the folder in the background and commits only the validated result.
+     *
+     * The cached library is only shown when the cache owns the exact folder URI and a read grant
+     * for it is still persisted; it is provisional until [StartupState.Ready]. A validation
+     * failure keeps whatever provisional library is on screen and surfaces the failure instead of
+     * clearing the library the user is looking at.
+     */
+    private fun restoreStartupLibrary(appContext: Context, uri: Uri) {
+        scanJob?.cancel()
+        scanJob = null
+        validateJob?.cancel()
+        validateJob = viewModelScope.launch {
+            performRestoreStartupLibrary(appContext, uri)
+        }
+    }
+
+    /**
+     * The cache-first startup body, extracted for the same reason as [performDirectoryLoad]: tests
+     * drive it directly to avoid a leaked [viewModelScope] coroutine.
+     */
+    internal suspend fun performRestoreStartupLibrary(appContext: Context, uri: Uri) {
+        val generation = libraryGeneration.incrementAndGet()
+        var restoredProvisional = false
+        beginScanIndicator()
+        try {
+            _scanTotal.value = 0
+            _scanCompleted.value = 0
+            _scanCurrentFile.value = ""
+            _scanFailures.value = emptyList()
+
+            val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
+            val cachedTracks = cachedSnapshot
+                ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
+                ?.tracks
+                .orEmpty()
+            val canRead = hasPersistedReadPermission(appContext, uri)
+
+            if (cachedTracks.isNotEmpty() && canRead && libraryGeneration.get() == generation) {
+                // Provisional restore from cache: show the last library now and keep validating.
+                restoredProvisional = true
+                updateLibraryState(cachedTracks)
+                _isReady.value = true
+                _startupState.value = StartupState.CacheRestored(cachedTracks.size)
+                withContext(Dispatchers.Main) {
+                    setupPlayerPlaylist(cachedTracks, forceRandom = false)
+                }
+            } else if (libraryGeneration.get() == generation) {
+                // No usable cache: surface a validating state instead of blocking the splash.
+                _startupState.value = StartupState.Validating(0)
+            }
+
+            persistFolderPermission(appContext, uri)
+
+            val result = scanner().scan(
+                appContext, uri, cachedTracks,
+                onProgress = { progress ->
+                    if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                },
+                shouldPersist = { libraryGeneration.get() == generation }
+            )
+            if (libraryGeneration.get() != generation) return
+
+            if (!result.scanSucceeded) {
+                val message = result.failure?.message ?: "フォルダを読み取れませんでした"
+                _scanFailures.value = result.failedFiles.ifEmpty { listOfNotNull(message) }
+                _isReady.value = true
+                _startupState.value = StartupState.Error(message, restoredProvisional)
+                return
+            }
+
+            val tracks = result.tracks
+            updateLibraryState(tracks)
+            withContext(Dispatchers.Main) {
+                setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+            }
+            _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+            _preloadedCache.complete(currentCacheSnapshot)
+            _scanFailures.value = result.failedFiles
+            _isReady.value = true
+            _startupState.value = StartupState.Ready
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (libraryGeneration.get() == generation) {
+                val message = e.message ?: "ライブラリの読み込みに失敗しました"
+                _scanFailures.value = listOfNotNull(message)
+                _isReady.value = true
+                _startupState.value = StartupState.Error(message, restoredProvisional)
+            }
+        } finally {
+            endScanIndicator()
+        }
+    }
+
+    private fun applyScanProgress(progress: LibraryScanProgress) {
+        _scanTotal.value = progress.total
+        _scanCompleted.value = progress.completed
+        _scanCurrentFile.value = progress.currentFile
+        _scanFailures.value = progress.failedFiles
+    }
+
+    private fun beginScanIndicator() {
+        activeScanCount.incrementAndGet()
+        _isScanningArtists.value = true
+    }
+
+    private fun endScanIndicator() {
+        if (activeScanCount.decrementAndGet() <= 0) {
+            activeScanCount.set(0)
+            _isScanningArtists.value = false
         }
     }
 
     fun cancelScan() {
         scanJob?.cancel()
         scanJob = null
-        _isScanningArtists.value = false
+        validateJob?.cancel()
+        validateJob = null
     }
 
     private fun persistFolderPermission(context: Context, uri: Uri): Boolean {
@@ -604,6 +776,12 @@ class PlayerViewModel : ViewModel() {
     private fun hasPersistedWritePermission(context: Context, uri: Uri): Boolean {
         return context.contentResolver.persistedUriPermissions.any { permission ->
             permission.uri == uri && permission.isWritePermission
+        }
+    }
+
+    private fun hasPersistedReadPermission(context: Context, uri: Uri): Boolean {
+        return context.contentResolver.persistedUriPermissions.any { permission ->
+            permission.uri == uri && permission.isReadPermission
         }
     }
 
@@ -765,43 +943,66 @@ class PlayerViewModel : ViewModel() {
             onComplete(false); return
         }
         viewModelScope.launch {
-            _isSavingMetadata.value = true
-            try {
-                val fileExt = metadataExtractor?.fileExtensionCache[trackUri]
-                    ?: trackUri.lastPathSegment?.substringAfterLast(".", "tmp")
-                    ?: "tmp"
-                val result = tagEditor?.updateTrackTags(
-                    context = appContext,
-                    trackUri = trackUri,
-                    request = TagEditRequest(
-                        title = title,
-                        artist = artist,
-                        album = album,
-                        trackNumber = trackNumber,
-                        genre = genre,
-                        year = year,
-                        composer = composer,
-                        albumArtist = albumArtist,
-                        discNumber = discNumber,
-                        comment = comment,
-                        artworkBitmap = artworkBitmap
-                    ),
-                    fileExtension = fileExt
+            performUpdateTrackTags(
+                appContext, trackUri, title, artist, album, trackNumber,
+                genre, year, composer, albumArtist, discNumber, comment, artworkBitmap, onComplete
+            )
+        }
+    }
+
+    /** Extracted tag-edit body so it can be driven directly by tests without a viewModelScope leak. */
+    internal suspend fun performUpdateTrackTags(
+        appContext: Context,
+        trackUri: Uri,
+        title: String,
+        artist: String,
+        album: String,
+        trackNumber: String,
+        genre: String?,
+        year: String?,
+        composer: String?,
+        albumArtist: String?,
+        discNumber: String?,
+        comment: String?,
+        artworkBitmap: Bitmap?,
+        onComplete: (Boolean) -> Unit
+    ) {
+        _isSavingMetadata.value = true
+        try {
+            val fileExt = metadataExtractor?.fileExtensionCache[trackUri]
+                ?: trackUri.lastPathSegment?.substringAfterLast(".", "tmp")
+                ?: "tmp"
+            val result = tagEditor?.updateTrackTags(
+                context = appContext,
+                trackUri = trackUri,
+                request = TagEditRequest(
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    trackNumber = trackNumber,
+                    genre = genre,
+                    year = year,
+                    composer = composer,
+                    albumArtist = albumArtist,
+                    discNumber = discNumber,
+                    comment = comment,
+                    artworkBitmap = artworkBitmap
+                ),
+                fileExtension = fileExt
+            )
+            val success = result?.isSuccess == true
+            if (success) {
+                val artBytes = result.getOrNull()?.albumArtBytes
+                refreshTrackAfterEdit(
+                    appContext, trackUri, title, artist, album, trackNumber,
+                    genre, year, composer, albumArtist, discNumber, comment,
+                    artBytes
                 )
-                val success = result?.isSuccess == true
-                if (success) {
-                    val artBytes = result.getOrNull()?.albumArtBytes
-                    refreshTrackAfterEdit(
-                        appContext, trackUri, title, artist, album, trackNumber,
-                        genre, year, composer, albumArtist, discNumber, comment,
-                        artBytes
-                    )
-                }
-                onComplete(success)
-            } finally {
-                _isSavingMetadata.value = false
-                isSavingMetadataGuard.set(false)
             }
+            onComplete(success)
+        } finally {
+            _isSavingMetadata.value = false
+            isSavingMetadataGuard.set(false)
         }
     }
 
@@ -821,6 +1022,13 @@ class PlayerViewModel : ViewModel() {
         artBytes: ByteArray?
     ) {
         withContext(Dispatchers.IO) {
+            // A committed tag edit is the newest truth about this library. Invalidate any in-flight
+            // scan so a stale result cannot overwrite the freshly edited metadata or persist a
+            // cache file built from pre-edit data.
+            libraryGeneration.incrementAndGet()
+            scanJob?.cancel()
+            validateJob?.cancel()
+
             val oldTrack = _artistMap.value.values.flatten().find { it.uri == trackUri }
             val originalIndex = oldTrack?.originalIndex ?: 0
             val updatedTrack = TrackData(
@@ -1121,6 +1329,7 @@ class PlayerViewModel : ViewModel() {
         metadataJob?.cancel()
         diagnosticsJob?.cancel()
         scanJob?.cancel()
+        validateJob?.cancel()
         sleepTimerController?.cancel()
         recommendationsJob?.cancel()
         preloadJob?.cancel()

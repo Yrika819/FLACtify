@@ -114,24 +114,24 @@ class PlaybackController(
         restoreRepeat: Int? = null
     ) {
         val mediaController = player ?: return
+        val desiredItems = buildMediaItems(tracks, fileExtension, mimeType)
+
+        // The startup restore loads the cached queue first and then re-applies the validated
+        // queue. When nothing material changed the requested queue is already loaded in the same
+        // order with the same metadata, so tearing it down and calling prepare() again would only
+        // discard the prepared window and the restored playback position. Playlist identity is
+        // compared by URI, order and metadata, never by count alone.
+        if (mediaController.hasMediaItems(desiredItems)) {
+            restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
+            restoreRepeat?.let { mediaController.repeatMode = it }
+            return
+        }
+
         val currentUri = currentUri()
         val wasPlaying = mediaController.isPlaying
         val currentPosition = mediaController.currentPosition
         mediaController.clearMediaItems()
-        mediaController.addMediaItems(tracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.uri.toString())
-                .setUri(track.uri)
-                .setMimeType(mimeType(fileExtension(track.uri)))
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.title)
-                        .setArtist(track.artist)
-                        .setAlbumTitle(track.album)
-                        .build()
-                )
-                .build()
-        })
+        mediaController.addMediaItems(desiredItems)
         mediaController.prepare()
         restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
         restoreRepeat?.let { mediaController.repeatMode = it }
@@ -149,6 +149,50 @@ class PlaybackController(
                 if (wasPlaying) mediaController.play()
             }
         }
+    }
+
+    private fun buildMediaItems(
+        tracks: List<TrackData>,
+        fileExtension: (Uri) -> String,
+        mimeType: (String) -> String
+    ): List<MediaItem> = tracks.map { track ->
+        MediaItem.Builder()
+            .setMediaId(track.uri.toString())
+            .setUri(track.uri)
+            .setMimeType(mimeType(fileExtension(track.uri)))
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setAlbumTitle(track.album)
+                    .build()
+            )
+            .build()
+    }
+
+    /**
+     * True when the controller already holds exactly [desired] in the same order and with the
+     * same identity (URI, MIME type, title, artist, album). Comparing only the number of items is
+     * not enough: a folder can swap one track for another without changing the count.
+     */
+    private fun androidx.media3.common.Player.hasMediaItems(desired: List<MediaItem>): Boolean {
+        if (mediaItemCount != desired.size) return false
+        for (index in 0 until mediaItemCount) {
+            if (!getMediaItemAt(index).hasSameIdentityAs(desired[index])) return false
+        }
+        return true
+    }
+
+    private fun MediaItem.hasSameIdentityAs(other: MediaItem): Boolean {
+        if ((localConfiguration?.uri?.toString() ?: mediaId) !=
+            (other.localConfiguration?.uri?.toString() ?: other.mediaId)
+        ) return false
+        if (localConfiguration?.mimeType != other.localConfiguration?.mimeType) return false
+        val a = mediaMetadata
+        val b = other.mediaMetadata
+        return a.title?.toString() == b.title?.toString() &&
+            a.artist?.toString() == b.artist?.toString() &&
+            a.albumTitle?.toString() == b.albumTitle?.toString()
     }
 
     fun playTracks(

@@ -9,8 +9,8 @@ import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -24,7 +24,11 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModelDirectorySwitchTest {
-    private val dispatcher = StandardTestDispatcher()
+    // Dispatchers.Main is an UnconfinedTestDispatcher, separate from runTest's own scheduler. The
+    // work launched on viewModelScope (Dispatchers.Main) then runs eagerly and deterministically,
+    // instead of being left as an active job that runTest waits on and reports as a spurious
+    // "test coroutine is not completing" failure.
+    private val dispatcher = UnconfinedTestDispatcher()
 
     @Before
     fun setUp() {
@@ -170,7 +174,7 @@ class PlayerViewModelDirectorySwitchTest {
     }
 
     private fun LibraryScanner.coEveryScan(uri: Uri, result: LibraryScanResult) {
-        coEvery { scan(any(), uri, any(), any()) } returns result
+        coEvery { scan(any(), uri, any(), any(), any()) } returns result
     }
 
     private fun mockUri(@Suppress("UNUSED_PARAMETER") value: String): Uri = mockk()
