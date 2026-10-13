@@ -116,6 +116,12 @@ class PlayerViewModel : ViewModel() {
     // arrives under an older generation must never overwrite the library, the saved cache or the
     // player queue of a newer intention.
     private val libraryGeneration = AtomicLong(0L)
+    /** Serializes generation changes with the synchronous part of a library commit. */
+    private val libraryCommitLock = Any()
+
+    private fun nextLibraryGeneration(): Long = synchronized(libraryCommitLock) {
+        libraryGeneration.incrementAndGet()
+    }
     // Reference count so a cancelled scan's finally block cannot clear the indicator of a newer
     // scan that is still running.
     private val activeScanCount = AtomicInteger(0)
@@ -576,8 +582,9 @@ class PlayerViewModel : ViewModel() {
         validateJob?.cancel()
         validateJob = null
         scanJob?.cancel()
+        val generation = nextLibraryGeneration()
         scanJob = viewModelScope.launch {
-            performDirectoryLoad(context.applicationContext, uri)
+            performDirectoryLoad(context.applicationContext, uri, generation)
         }
     }
 
@@ -587,18 +594,20 @@ class PlayerViewModel : ViewModel() {
      * on). [loadDirectory] is a thin launcher around this.
      */
     internal suspend fun performDirectoryLoad(appContext: Context, uri: Uri) {
-        val generation = libraryGeneration.incrementAndGet()
-        beginScanIndicator()
-        try {
-            _scanTotal.value = 0
-            _scanCompleted.value = 0
-            _scanCurrentFile.value = ""
-            _scanFailures.value = emptyList()
+        performDirectoryLoad(appContext, uri, nextLibraryGeneration())
+    }
 
+    private suspend fun performDirectoryLoad(appContext: Context, uri: Uri, generation: Long) {
+        if (!beginScanForGeneration(generation)) return
+        try {
             // Requesting a persistable grant is not a folder switch. Keep the previous
             // library, queue, URI and edit capability until the requested tree scans.
-            persistFolderPermission(appContext, uri)
+            synchronized(libraryCommitLock) {
+                if (libraryGeneration.get() != generation) return
+                persistFolderPermission(appContext, uri)
+            }
             val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
+            if (libraryGeneration.get() != generation) return
             val cachedTracks = cachedSnapshot
                 ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
                 ?.tracks
@@ -606,30 +615,49 @@ class PlayerViewModel : ViewModel() {
             val result = scanner().scan(
                 appContext, uri, cachedTracks,
                 onProgress = { progress ->
-                    if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                    }
                 },
-                shouldPersist = { libraryGeneration.get() == generation }
+                shouldPersist = { libraryGeneration.get() == generation },
+                persistIfCurrent = { tracksToSave ->
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            saveCache(appContext, uri, tracksToSave)
+                        }
+                    }
+                }
             )
             if (libraryGeneration.get() != generation) return
             if (!result.scanSucceeded) {
-                _scanFailures.value = result.failedFiles.ifEmpty {
-                    listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
+                synchronized(libraryCommitLock) {
+                    if (libraryGeneration.get() == generation) {
+                        _scanFailures.value = result.failedFiles.ifEmpty {
+                            listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
+                        }
+                        _isReady.value = true
+                    }
                 }
-                _isReady.value = true
                 return
             }
 
             val tracks = result.tracks
-            updateLibraryState(tracks)
+            val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
             withContext(Dispatchers.Main) {
-                setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+                synchronized(libraryCommitLock) {
+                    if (libraryGeneration.get() == generation) {
+                        publishLibraryGroups(groups)
+                        setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+                        sharedPreferences?.edit()?.putString("last_uri", uri.toString())?.apply()
+                        _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+                        currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+                        _preloadedCache.complete(currentCacheSnapshot)
+                        _scanFailures.value = result.failedFiles
+                        _isReady.value = true
+                        _startupState.value = StartupState.Ready
+                    }
+                }
             }
-            sharedPreferences?.edit()?.putString("last_uri", uri.toString())?.apply()
-            _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
-            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
-            _preloadedCache.complete(currentCacheSnapshot)
-            _scanFailures.value = result.failedFiles
-            _isReady.value = true
         } finally {
             endScanIndicator()
         }
@@ -649,8 +677,9 @@ class PlayerViewModel : ViewModel() {
         scanJob?.cancel()
         scanJob = null
         validateJob?.cancel()
+        val generation = nextLibraryGeneration()
         validateJob = viewModelScope.launch {
-            performRestoreStartupLibrary(appContext, uri)
+            performRestoreStartupLibrary(appContext, uri, generation)
         }
     }
 
@@ -659,74 +688,109 @@ class PlayerViewModel : ViewModel() {
      * drive it directly to avoid a leaked [viewModelScope] coroutine.
      */
     internal suspend fun performRestoreStartupLibrary(appContext: Context, uri: Uri) {
-        val generation = libraryGeneration.incrementAndGet()
-        var restoredProvisional = false
-        beginScanIndicator()
-        try {
-            _scanTotal.value = 0
-            _scanCompleted.value = 0
-            _scanCurrentFile.value = ""
-            _scanFailures.value = emptyList()
+        performRestoreStartupLibrary(appContext, uri, nextLibraryGeneration())
+    }
 
+    private suspend fun performRestoreStartupLibrary(appContext: Context, uri: Uri, generation: Long) {
+        var restoredProvisional = false
+        if (!beginScanForGeneration(generation)) return
+        try {
             val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
+            if (libraryGeneration.get() != generation) return
             val cachedTracks = cachedSnapshot
                 ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
                 ?.tracks
                 .orEmpty()
-            val canRead = hasPersistedReadPermission(appContext, uri)
+            val canRead = synchronized(libraryCommitLock) {
+                if (libraryGeneration.get() == generation) hasPersistedReadPermission(appContext, uri) else false
+            }
 
             if (cachedTracks.isNotEmpty() && canRead && libraryGeneration.get() == generation) {
                 // Provisional restore from cache: show the last library now and keep validating.
                 restoredProvisional = true
-                updateLibraryState(cachedTracks)
-                _isReady.value = true
-                _startupState.value = StartupState.CacheRestored(cachedTracks.size)
+                val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(cachedTracks) }
                 withContext(Dispatchers.Main) {
-                    setupPlayerPlaylist(cachedTracks, forceRandom = false)
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            publishLibraryGroups(groups)
+                            _isReady.value = true
+                            _startupState.value = StartupState.CacheRestored(cachedTracks.size)
+                            setupPlayerPlaylist(cachedTracks, forceRandom = false)
+                        }
+                    }
                 }
             } else if (libraryGeneration.get() == generation) {
                 // No usable cache: surface a validating state instead of blocking the splash.
-                _startupState.value = StartupState.Validating(0)
+                withContext(Dispatchers.Main) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            _startupState.value = StartupState.Validating(0)
+                        }
+                    }
+                }
             }
 
-            persistFolderPermission(appContext, uri)
+            synchronized(libraryCommitLock) {
+                if (libraryGeneration.get() != generation) return
+                persistFolderPermission(appContext, uri)
+            }
 
             val result = scanner().scan(
                 appContext, uri, cachedTracks,
                 onProgress = { progress ->
-                    if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                    }
                 },
-                shouldPersist = { libraryGeneration.get() == generation }
+                shouldPersist = { libraryGeneration.get() == generation },
+                persistIfCurrent = { tracksToSave ->
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            saveCache(appContext, uri, tracksToSave)
+                        }
+                    }
+                }
             )
             if (libraryGeneration.get() != generation) return
 
             if (!result.scanSucceeded) {
-                val message = result.failure?.message ?: "フォルダを読み取れませんでした"
-                _scanFailures.value = result.failedFiles.ifEmpty { listOfNotNull(message) }
-                _isReady.value = true
-                _startupState.value = StartupState.Error(message, restoredProvisional)
+                synchronized(libraryCommitLock) {
+                    if (libraryGeneration.get() == generation) {
+                        val message = result.failure?.message ?: "フォルダを読み取れませんでした"
+                        _scanFailures.value = result.failedFiles.ifEmpty { listOfNotNull(message) }
+                        _isReady.value = true
+                        _startupState.value = StartupState.Error(message, restoredProvisional)
+                    }
+                }
                 return
             }
 
             val tracks = result.tracks
-            updateLibraryState(tracks)
+            val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
             withContext(Dispatchers.Main) {
-                setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+                synchronized(libraryCommitLock) {
+                    if (libraryGeneration.get() == generation) {
+                        publishLibraryGroups(groups)
+                        setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
+                        _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+                        currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+                        _preloadedCache.complete(currentCacheSnapshot)
+                        _scanFailures.value = result.failedFiles
+                        _isReady.value = true
+                        _startupState.value = StartupState.Ready
+                    }
+                }
             }
-            _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
-            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
-            _preloadedCache.complete(currentCacheSnapshot)
-            _scanFailures.value = result.failedFiles
-            _isReady.value = true
-            _startupState.value = StartupState.Ready
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (libraryGeneration.get() == generation) {
-                val message = e.message ?: "ライブラリの読み込みに失敗しました"
-                _scanFailures.value = listOfNotNull(message)
-                _isReady.value = true
-                _startupState.value = StartupState.Error(message, restoredProvisional)
+            synchronized(libraryCommitLock) {
+                if (libraryGeneration.get() == generation) {
+                    val message = e.message ?: "ライブラリの読み込みに失敗しました"
+                    _scanFailures.value = listOfNotNull(message)
+                    _isReady.value = true
+                    _startupState.value = StartupState.Error(message, restoredProvisional)
+                }
             }
         } finally {
             endScanIndicator()
@@ -743,6 +807,19 @@ class PlayerViewModel : ViewModel() {
     private fun beginScanIndicator() {
         activeScanCount.incrementAndGet()
         _isScanningArtists.value = true
+    }
+
+    private fun beginScanForGeneration(generation: Long): Boolean = synchronized(libraryCommitLock) {
+        if (libraryGeneration.get() != generation) {
+            false
+        } else {
+            beginScanIndicator()
+            _scanTotal.value = 0
+            _scanCompleted.value = 0
+            _scanCurrentFile.value = ""
+            _scanFailures.value = emptyList()
+            true
+        }
     }
 
     private fun endScanIndicator() {
@@ -785,27 +862,21 @@ class PlayerViewModel : ViewModel() {
         }
     }
 
-    private suspend fun updateLibraryState(tracks: List<TrackData>) {
-        val distinctTracks = tracks.distinctBy { it.uri.toString() }
-        val tempArtistMap = mutableMapOf<String, MutableList<TrackData>>()
-        val tempAlbumMap = mutableMapOf<String, MutableList<TrackData>>()
-
-        distinctTracks.forEach { track ->
-            val artistKey = track.artist
-            val albumKey = track.album
-
-            val existingArtistKey = tempArtistMap.keys.find { it.equals(artistKey, ignoreCase = true) }
-            tempArtistMap.getOrPut(existingArtistKey ?: artistKey) { mutableListOf() }.add(track)
-
-            val existingAlbumKey = tempAlbumMap.keys.find { it.equals(albumKey, ignoreCase = true) }
-            tempAlbumMap.getOrPut(existingAlbumKey ?: albumKey) { mutableListOf() }.add(track)
-        }
-
-        withContext(Dispatchers.Main) {
-            _trackList.value = distinctTracks.map { it.title }
-            _artistMap.value = tempArtistMap.toSortedMap(compareBy { it.lowercase() })
-            _albumMap.value = tempAlbumMap.toSortedMap(compareBy { it.lowercase() })
-        }
+    /**
+     * Publishes the library grouped by artist and album from [tracks].
+     *
+     * The grouping is proportional work, so it runs on [Dispatchers.Default] and only its result is
+     * published on the main dispatcher, keeping the UI thread free for a library of any size.
+     *
+     * [generation] is the library intention this result belongs to. It is re-checked immediately
+     * before the commit: an intention that was superseded while its grouping was in flight (a folder
+     * switch, a committed tag edit, or a newer validation scan) must never overwrite the newer
+     * library, its player queue or its cache.
+     */
+    private fun publishLibraryGroups(groups: LibraryGrouping.Groups) {
+        _trackList.value = groups.tracks.map { it.title }
+        _artistMap.value = groups.artistMap
+        _albumMap.value = groups.albumMap
     }
 
     private fun setupPlayerPlaylist(tracks: List<TrackData>, forceRandom: Boolean = false) {
@@ -942,10 +1013,12 @@ class PlayerViewModel : ViewModel() {
         if (!isSavingMetadataGuard.compareAndSet(false, true)) {
             onComplete(false); return
         }
+        val libraryGenerationAtEditStart = libraryGeneration.get()
         viewModelScope.launch {
             performUpdateTrackTags(
                 appContext, trackUri, title, artist, album, trackNumber,
-                genre, year, composer, albumArtist, discNumber, comment, artworkBitmap, onComplete
+                genre, year, composer, albumArtist, discNumber, comment, artworkBitmap, onComplete,
+                libraryGenerationAtEditStart
             )
         }
     }
@@ -965,7 +1038,8 @@ class PlayerViewModel : ViewModel() {
         discNumber: String?,
         comment: String?,
         artworkBitmap: Bitmap?,
-        onComplete: (Boolean) -> Unit
+        onComplete: (Boolean) -> Unit,
+        libraryGenerationAtEditStart: Long = libraryGeneration.get()
     ) {
         _isSavingMetadata.value = true
         try {
@@ -996,7 +1070,7 @@ class PlayerViewModel : ViewModel() {
                 refreshTrackAfterEdit(
                     appContext, trackUri, title, artist, album, trackNumber,
                     genre, year, composer, albumArtist, discNumber, comment,
-                    artBytes
+                    artBytes, libraryGenerationAtEditStart
                 )
             }
             onComplete(success)
@@ -1019,15 +1093,24 @@ class PlayerViewModel : ViewModel() {
         albumArtist: String?,
         discNumber: String?,
         comment: String?,
-        artBytes: ByteArray?
+        artBytes: ByteArray?,
+        libraryGenerationAtEditStart: Long
     ) {
         withContext(Dispatchers.IO) {
             // A committed tag edit is the newest truth about this library. Invalidate any in-flight
             // scan so a stale result cannot overwrite the freshly edited metadata or persist a
             // cache file built from pre-edit data.
-            libraryGeneration.incrementAndGet()
-            scanJob?.cancel()
-            validateJob?.cancel()
+            val generation = synchronized(libraryCommitLock) {
+                if (libraryGeneration.get() == libraryGenerationAtEditStart) {
+                    libraryGeneration.incrementAndGet()
+                } else {
+                    null
+                }
+            }
+            if (generation != null) {
+                scanJob?.cancel()
+                validateJob?.cancel()
+            }
 
             val oldTrack = _artistMap.value.values.flatten().find { it.uri == trackUri }
             val originalIndex = oldTrack?.originalIndex ?: 0
@@ -1040,30 +1123,32 @@ class PlayerViewModel : ViewModel() {
                 albumArtBytes = compactArtworkBytes(artBytes), lastModified = System.currentTimeMillis()
             )
 
-            // Rebuild library state with the updated track
-            val allTracks = _artistMap.value.values.flatten().toMutableList()
-            val idx = allTracks.indexOfFirst { it.uri == trackUri }
-            if (idx != -1) allTracks[idx] = updatedTrack else allTracks.add(updatedTrack)
+            // Rebuild library state with the updated track. The shared grouping keeps this rebuild
+            // byte-for-byte identical to the grouping a scan performs, so editing a tag can never
+            // reorder groups, drop duplicates or change a display key.
+            if (generation != null) {
+                val allTracks = _artistMap.value.values.flatten().toMutableList()
+                val idx = allTracks.indexOfFirst { it.uri == trackUri }
+                if (idx != -1) allTracks[idx] = updatedTrack else allTracks.add(updatedTrack)
 
-            val distinctTracks = allTracks.distinctBy { it.uri.toString() }
-            val tempArtistMap = mutableMapOf<String, MutableList<TrackData>>()
-            val tempAlbumMap = mutableMapOf<String, MutableList<TrackData>>()
-            distinctTracks.forEach { track ->
-                val aKey = tempArtistMap.keys.find { it.equals(track.artist, ignoreCase = true) } ?: track.artist
-                tempArtistMap.getOrPut(aKey) { mutableListOf() }.add(track)
-                val alKey = tempAlbumMap.keys.find { it.equals(track.album, ignoreCase = true) } ?: track.album
-                tempAlbumMap.getOrPut(alKey) { mutableListOf() }.add(track)
-            }
+                val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(allTracks) }
+                // A newer folder intention that arrived during the file write remains authoritative.
+                withContext(Dispatchers.Main) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            publishLibraryGroups(groups)
+                        }
+                    }
+                }
 
-            withContext(Dispatchers.Main) {
-                _trackList.value = distinctTracks.map { it.title }
-                _artistMap.value = tempArtistMap.toSortedMap(compareBy { it.lowercase() })
-                _albumMap.value = tempAlbumMap.toSortedMap(compareBy { it.lowercase() })
-            }
-
-            val folderUriStr = sharedPreferences?.getString("last_uri", null)
-            if (!folderUriStr.isNullOrEmpty()) {
-                saveCache(context, Uri.parse(folderUriStr), distinctTracks)
+                synchronized(libraryCommitLock) {
+                    if (libraryGeneration.get() == generation) {
+                        val folderUriStr = sharedPreferences?.getString("last_uri", null)
+                        if (!folderUriStr.isNullOrEmpty()) {
+                            saveCache(context, Uri.parse(folderUriStr), groups.tracks)
+                        }
+                    }
+                }
             }
 
             // Update player metadata for the currently playing track

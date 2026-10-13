@@ -55,6 +55,9 @@ class PlayerViewModelStartupCacheRestoreTest {
         h.scanner.gated(h.a, gate, success(h, "A", h.aUri()))
 
         launch { h.viewModel.performRestoreStartupLibrary(h.context, h.a) }
+        awaitLibraryState(message = "the provisional cache restore to be published") {
+            h.viewModel.trackList.value == listOf("A")
+        }
         advanceUntilIdle()
 
         // Provisional restore happened without any scan completing: the splash can end now.
@@ -65,6 +68,9 @@ class PlayerViewModelStartupCacheRestoreTest {
 
         // The validation result arrives and promotes the state to READY.
         gate.complete(Unit)
+        awaitLibraryState(message = "the validated scan to be promoted") {
+            h.viewModel.trackList.value == listOf("A") && h.viewModel.startupState.value is StartupState.Ready
+        }
         advanceUntilIdle()
         assertTrue(h.viewModel.startupState.value is StartupState.Ready)
         assertEquals(listOf("A"), h.viewModel.trackList.value)
@@ -87,6 +93,9 @@ class PlayerViewModelStartupCacheRestoreTest {
         assertTrue(h.viewModel.trackList.value.isEmpty())
 
         gate.complete(Unit)
+        awaitLibraryState(message = "the validated scan to be promoted") {
+            h.viewModel.trackList.value == listOf("A") && h.viewModel.startupState.value is StartupState.Ready
+        }
         advanceUntilIdle()
         assertTrue(h.viewModel.startupState.value is StartupState.Ready)
         assertEquals(listOf("A"), h.viewModel.trackList.value)
@@ -112,6 +121,9 @@ class PlayerViewModelStartupCacheRestoreTest {
 
         // Let the paused validation finish so nothing is left dangling.
         gate.complete(Unit)
+        awaitLibraryState(message = "the validated scan to be promoted") {
+            h.viewModel.startupState.value is StartupState.Ready
+        }
         advanceUntilIdle()
         assertTrue(h.viewModel.startupState.value is StartupState.Ready)
     }
@@ -124,6 +136,9 @@ class PlayerViewModelStartupCacheRestoreTest {
         h.scanner.everyScan(h.a, scanFailed(SecurityException("permission denied")))
 
         launch { h.viewModel.performRestoreStartupLibrary(h.context, h.a) }
+        awaitLibraryState(message = "the provisional cache restore to be published") {
+            h.viewModel.trackList.value == listOf("A")
+        }
         advanceUntilIdle()
 
         assertEquals(listOf("A"), h.viewModel.trackList.value)
@@ -160,6 +175,9 @@ class PlayerViewModelStartupCacheRestoreTest {
         h.scanner.gated(h.b, startupGate, success(h, "B", h.bUri()))
 
         launch { h.viewModel.performRestoreStartupLibrary(h.context, h.b) }
+        awaitLibraryState(message = "the provisional cache restore to be published") {
+            h.viewModel.trackList.value == listOf("B")
+        }
         advanceUntilIdle()
         // Provisional B is already on screen.
         assertEquals(listOf("B"), h.viewModel.trackList.value)
@@ -167,6 +185,9 @@ class PlayerViewModelStartupCacheRestoreTest {
         // The user instead switches to folder A, which scans and commits deterministically.
         h.scanner.everyScan(h.a, success(h, "A", h.aUri()))
         launch { h.viewModel.performDirectoryLoad(h.context, h.a) }
+        awaitLibraryState(message = "folder A to be published and persisted") {
+            h.viewModel.trackList.value == listOf("A") && h.lastUri == h.a.toString()
+        }
         advanceUntilIdle()
         assertEquals(listOf("A"), h.viewModel.trackList.value)
 
@@ -221,14 +242,14 @@ class PlayerViewModelStartupCacheRestoreTest {
     }
 
     private fun LibraryScanner.gated(uri: Uri, gate: CompletableDeferred<Unit>, result: LibraryScanResult) {
-        coEvery { scan(any(), uri, any(), any(), any()) } coAnswers {
+        coEvery { scan(any(), uri, any(), any(), any(), any()) } coAnswers {
             gate.await()
             result
         }
     }
 
     private fun LibraryScanner.everyScan(uri: Uri, result: LibraryScanResult) {
-        coEvery { scan(any(), uri, any(), any(), any()) } returns result
+        coEvery { scan(any(), uri, any(), any(), any(), any()) } returns result
     }
 
     private fun permission(uri: Uri, read: Boolean, write: Boolean): UriPermission {
