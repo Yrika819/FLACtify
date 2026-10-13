@@ -118,9 +118,42 @@ class PlayerViewModel : ViewModel() {
     private val libraryGeneration = AtomicLong(0L)
     /** Serializes generation changes with the synchronous part of a library commit. */
     private val libraryCommitLock = Any()
+    /**
+     * Serializes library cache writes, and only those.
+     *
+     * A cache write is a whole-library serialisation plus an AtomicFile commit, which is by far the
+     * slowest thing a library commit can do. It must never run while [libraryCommitLock] is held:
+     * that monitor is also what the main thread takes to allocate the generation of the next folder
+     * intention, so a slow write would park the UI thread for the whole disk operation.
+     */
+    private val libraryCacheWriteLock = Any()
 
     private fun nextLibraryGeneration(): Long = synchronized(libraryCommitLock) {
         libraryGeneration.incrementAndGet()
+    }
+
+    /** True when [generation] is still the newest library intention. */
+    private fun isCurrentLibraryGeneration(generation: Long): Boolean =
+        synchronized(libraryCommitLock) { libraryGeneration.get() == generation }
+
+    /**
+     * Persists the library cache of [generation]'s folder, unless that generation was superseded.
+     *
+     * The generation check is the last thing that happens before the serialisation starts, so a
+     * cache file can only be written by the generation that owns the library right now. The write
+     * itself runs on [libraryCacheWriteLock] instead of [libraryCommitLock], so a slower disk can
+     * never make the main thread wait for it.
+     */
+    private fun saveCacheIfCurrent(
+        appContext: Context,
+        folderUri: Uri,
+        generation: Long,
+        tracks: List<TrackData>
+    ) {
+        synchronized(libraryCacheWriteLock) {
+            if (!isCurrentLibraryGeneration(generation)) return
+            saveCache(appContext, folderUri, tracks)
+        }
     }
     // Reference count so a cancelled scan's finally block cannot clear the indicator of a newer
     // scan that is still running.
@@ -601,11 +634,12 @@ class PlayerViewModel : ViewModel() {
         if (!beginScanForGeneration(generation)) return
         try {
             // Requesting a persistable grant is not a folder switch. Keep the previous
-            // library, queue, URI and edit capability until the requested tree scans.
-            synchronized(libraryCommitLock) {
-                if (libraryGeneration.get() != generation) return
-                persistFolderPermission(appContext, uri)
-            }
+            // library, queue, URI and edit capability until the requested tree scans. The grant
+            // itself is a synchronous ContentResolver call, so it is taken outside the generation
+            // lock: the generation guard stays, but a slow provider can no longer make the UI
+            // thread wait for it.
+            if (libraryGeneration.get() != generation) return
+            persistFolderPermission(appContext, uri)
             val cachedSnapshot = currentCacheSnapshot ?: _preloadedCache.await()
             if (libraryGeneration.get() != generation) return
             val cachedTracks = cachedSnapshot
@@ -619,13 +653,9 @@ class PlayerViewModel : ViewModel() {
                         if (libraryGeneration.get() == generation) applyScanProgress(progress)
                     }
                 },
-                shouldPersist = { libraryGeneration.get() == generation },
+                shouldPersist = { isCurrentLibraryGeneration(generation) },
                 persistIfCurrent = { tracksToSave ->
-                    synchronized(libraryCommitLock) {
-                        if (libraryGeneration.get() == generation) {
-                            saveCache(appContext, uri, tracksToSave)
-                        }
-                    }
+                    saveCacheIfCurrent(appContext, uri, generation, tracksToSave)
                 }
             )
             if (libraryGeneration.get() != generation) return
@@ -643,13 +673,16 @@ class PlayerViewModel : ViewModel() {
 
             val tracks = result.tracks
             val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
+            // The write-permission read is another ContentResolver call: resolve it before the
+            // commit so it is a plain value, never part of the critical section.
+            val canEdit = hasPersistedWritePermission(appContext, uri)
             withContext(Dispatchers.Main) {
                 synchronized(libraryCommitLock) {
                     if (libraryGeneration.get() == generation) {
                         publishLibraryGroups(groups)
                         setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
                         sharedPreferences?.edit()?.putString("last_uri", uri.toString())?.apply()
-                        _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+                        _canEditMetadata.value = canEdit
                         currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
                         _preloadedCache.complete(currentCacheSnapshot)
                         _scanFailures.value = result.failedFiles
@@ -701,9 +734,8 @@ class PlayerViewModel : ViewModel() {
                 ?.takeIf { LibraryScanner.ownsFolder(it, uri) }
                 ?.tracks
                 .orEmpty()
-            val canRead = synchronized(libraryCommitLock) {
-                if (libraryGeneration.get() == generation) hasPersistedReadPermission(appContext, uri) else false
-            }
+            val canRead = hasPersistedReadPermission(appContext, uri)
+            if (libraryGeneration.get() != generation) return
 
             if (cachedTracks.isNotEmpty() && canRead && libraryGeneration.get() == generation) {
                 // Provisional restore from cache: show the last library now and keep validating.
@@ -730,10 +762,8 @@ class PlayerViewModel : ViewModel() {
                 }
             }
 
-            synchronized(libraryCommitLock) {
-                if (libraryGeneration.get() != generation) return
-                persistFolderPermission(appContext, uri)
-            }
+            if (libraryGeneration.get() != generation) return
+            persistFolderPermission(appContext, uri)
 
             val result = scanner().scan(
                 appContext, uri, cachedTracks,
@@ -742,13 +772,9 @@ class PlayerViewModel : ViewModel() {
                         if (libraryGeneration.get() == generation) applyScanProgress(progress)
                     }
                 },
-                shouldPersist = { libraryGeneration.get() == generation },
+                shouldPersist = { isCurrentLibraryGeneration(generation) },
                 persistIfCurrent = { tracksToSave ->
-                    synchronized(libraryCommitLock) {
-                        if (libraryGeneration.get() == generation) {
-                            saveCache(appContext, uri, tracksToSave)
-                        }
-                    }
+                    saveCacheIfCurrent(appContext, uri, generation, tracksToSave)
                 }
             )
             if (libraryGeneration.get() != generation) return
@@ -767,12 +793,13 @@ class PlayerViewModel : ViewModel() {
 
             val tracks = result.tracks
             val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
+            val canEdit = hasPersistedWritePermission(appContext, uri)
             withContext(Dispatchers.Main) {
                 synchronized(libraryCommitLock) {
                     if (libraryGeneration.get() == generation) {
                         publishLibraryGroups(groups)
                         setupPlayerPlaylist(tracks, forceRandom = cachedTracks.isEmpty())
-                        _canEditMetadata.value = hasPersistedWritePermission(appContext, uri)
+                        _canEditMetadata.value = canEdit
                         currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
                         _preloadedCache.complete(currentCacheSnapshot)
                         _scanFailures.value = result.failedFiles
@@ -1141,12 +1168,10 @@ class PlayerViewModel : ViewModel() {
                     }
                 }
 
-                synchronized(libraryCommitLock) {
-                    if (libraryGeneration.get() == generation) {
-                        val folderUriStr = sharedPreferences?.getString("last_uri", null)
-                        if (!folderUriStr.isNullOrEmpty()) {
-                            saveCache(context, Uri.parse(folderUriStr), groups.tracks)
-                        }
+                if (isCurrentLibraryGeneration(generation)) {
+                    val folderUriStr = sharedPreferences?.getString("last_uri", null)
+                    if (!folderUriStr.isNullOrEmpty()) {
+                        saveCacheIfCurrent(context, Uri.parse(folderUriStr), generation, groups.tracks)
                     }
                 }
             }
