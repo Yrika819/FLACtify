@@ -50,7 +50,6 @@ fun PlayerScreen(
     val albumArt by viewModel.albumArt.collectAsState()
     val lyrics by viewModel.lyrics.collectAsState()
     val audioInfo by viewModel.audioInfo.collectAsState()
-    val bluetoothInfo by viewModel.bluetoothCodecInfo.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
     val trackList by viewModel.trackList.collectAsState()
     val isScanning by viewModel.isScanningArtists.collectAsState()
@@ -137,7 +136,7 @@ fun PlayerScreen(
                     Spacer(Modifier.height(16.dp))
                     TrackInformation(trackName, artist)
                     Spacer(Modifier.height(6.dp))
-                    QualityBadges(diagnostics, audioInfo, bluetoothInfo) { showDiagnostics = true }
+                    QualityBadges(diagnostics, audioInfo) { showDiagnostics = true }
                     Spacer(Modifier.height(8.dp))
                     PlaybackProgress(viewModel)
                     PlaybackControls(viewModel)
@@ -231,11 +230,10 @@ private fun TrackInformation(trackName: String, artist: String) {
 private fun QualityBadges(
     diagnostics: PlaybackDiagnostics,
     audioInfo: String,
-    bluetoothInfo: String,
     onOpenDiagnostics: () -> Unit
 ) {
     val source = diagnostics.sourceLabel.ifEmpty { audioInfo.replace(" | ", " • ") }
-    val route = diagnostics.routeLabel ?: bluetoothInfo.takeIf(String::isNotEmpty)
+    val route = diagnostics.routeLabel
     FlowRow(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
