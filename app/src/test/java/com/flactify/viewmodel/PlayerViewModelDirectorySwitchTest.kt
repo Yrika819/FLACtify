@@ -7,6 +7,8 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -45,6 +47,11 @@ class PlayerViewModelDirectorySwitchTest {
         val harness = Harness()
         harness.scanner.coEveryScan(harness.b, success("B"))
         harness.viewModel.loadDirectory(harness.context, harness.b)
+        awaitLibraryState(message = "folder B to be published and persisted") {
+            harness.viewModel.trackList.value == listOf("B") &&
+                harness.lastUri == harness.b.toString() &&
+                harness.viewModel.isReady.value
+        }
         advanceUntilIdle()
 
         assertEquals(listOf("B"), harness.viewModel.trackList.value)
@@ -113,19 +120,27 @@ class PlayerViewModelDirectorySwitchTest {
     }
 
     @Test
-    fun `inaccessible persisted folder at startup reports failure without committing empty library`() = runTest {
+    fun `inaccessible persisted folder at startup reports failure without committing empty library`() = runBlocking {
         val harness = Harness()
         harness.lastUri = harness.a.toString()
         harness.scanner.coEveryScan(harness.a, failed(SecurityException("unavailable")))
 
         harness.viewModel.loadDirectory(harness.context, harness.a)
-        advanceUntilIdle()
+        awaitLibraryState(message = "the failed startup folder scan to settle") {
+            harness.viewModel.scanFailures.value.isNotEmpty() &&
+                harness.viewModel.isReady.value &&
+                !harness.viewModel.isScanningArtists.value
+        }
+        val scanJob = getField(harness.viewModel, "scanJob") as Job
+        scanJob.join()
 
         assertTrue(harness.viewModel.trackList.value.isEmpty())
         assertEquals(harness.a.toString(), harness.lastUri)
         assertTrue(harness.viewModel.scanFailures.value.isNotEmpty())
         assertTrue(harness.viewModel.isReady.value)
         assertFalse(harness.viewModel.isScanningArtists.value)
+        assertTrue("failed folder scan job should be complete", scanJob.isCompleted)
+        harness.viewModel.cleanup()
     }
 
     private inner class Harness {
@@ -164,9 +179,14 @@ class PlayerViewModelDirectorySwitchTest {
             state.value = value
         }
 
-        fun activateA(scope: TestScope) {
+        suspend fun activateA(scope: TestScope) {
             scanner.coEveryScan(a, success("A"))
             viewModel.loadDirectory(context, a)
+            awaitLibraryState(message = "folder A to be published and persisted") {
+                viewModel.trackList.value == listOf("A") &&
+                    lastUri == a.toString() &&
+                    viewModel.isReady.value
+            }
             scope.advanceUntilIdle()
             assertEquals(listOf("A"), viewModel.trackList.value)
             assertEquals(a.toString(), lastUri)
@@ -174,7 +194,7 @@ class PlayerViewModelDirectorySwitchTest {
     }
 
     private fun LibraryScanner.coEveryScan(uri: Uri, result: LibraryScanResult) {
-        coEvery { scan(any(), uri, any(), any(), any()) } returns result
+        coEvery { scan(any(), uri, any(), any(), any(), any()) } returns result
     }
 
     private fun mockUri(@Suppress("UNUSED_PARAMETER") value: String): Uri = mockk()
