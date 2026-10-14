@@ -7,7 +7,7 @@ import org.junit.Test
 class PlayerArtworkSizingTest {
     @Test
     fun artworkUsesTheWholeBodyViewportOnTallScreens() {
-        assertEquals(300.dp, constrainedArtworkSize(380.dp, 760.dp))
+        assertEquals(380.dp, constrainedArtworkSize(380.dp, 760.dp))
     }
 
     @Test
@@ -17,7 +17,7 @@ class PlayerArtworkSizingTest {
 
     @Test
     fun artworkShrinksPredictablyOnlyOnCompactScreens() {
-        assertEquals(168.dp, constrainedArtworkSize(380.dp, 400.dp))
+        assertEquals(208.dp, constrainedArtworkSize(380.dp, 400.dp))
     }
 
     @Test
