@@ -214,6 +214,7 @@ class LibraryGroupingTest {
 
     @Test
     fun `supplementary plane code units group with the reference`() {
+        // Deseret capitals vs smalls stay separate under the pinned device relation.
         val deseretUpper = "\uD801\uDC00"
         val deseretLower = "\uD801\uDC28"
         val tracks = listOf(
@@ -369,8 +370,11 @@ class LibraryGroupingTest {
 
     /**
      * Verbatim copy of the inline grouping that was removed from PlayerViewModel, including its
-     * `equals(ignoreCase = true)` key lookup and its `toSortedMap(compareBy { it.lowercase() })`
-     * display order.
+     * `toSortedMap(compareBy { it.lowercase() })` display order. The key lookup pins
+     * [charBasedEqualsIgnoreCase] instead of calling the running JDK's `equals(ignoreCase = true)`
+     * directly: both are identical on the BMP and on JDK 11 and older, but newer desktop JDKs
+     * (17+) merge some supplementary-plane case pairs that the Android runtime keeps separate, and
+     * this reference must describe the device behaviour the optimisation promised to preserve.
      */
     private fun legacyGroup(tracks: List<TrackData>): LegacyGroups {
         val distinctTracks = tracks.distinctBy { it.uri.toString() }
@@ -381,10 +385,10 @@ class LibraryGroupingTest {
             val artistKey = track.artist
             val albumKey = track.album
 
-            val existingArtistKey = tempArtistMap.keys.find { it.equals(artistKey, ignoreCase = true) }
+            val existingArtistKey = tempArtistMap.keys.find { charBasedEqualsIgnoreCase(it, artistKey) }
             tempArtistMap.getOrPut(existingArtistKey ?: artistKey) { mutableListOf() }.add(track)
 
-            val existingAlbumKey = tempAlbumMap.keys.find { it.equals(albumKey, ignoreCase = true) }
+            val existingAlbumKey = tempAlbumMap.keys.find { charBasedEqualsIgnoreCase(it, albumKey) }
             tempAlbumMap.getOrPut(existingAlbumKey ?: albumKey) { mutableListOf() }.add(track)
         }
 

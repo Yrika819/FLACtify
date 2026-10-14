@@ -67,13 +67,20 @@ object LibraryGrouping {
     /**
      * Canonical case-folding key used to look up an existing group.
      *
-     * The original code compared candidate keys with `String.equals(ignoreCase = true)`, which on the
-     * JVM is `java.lang.String.equalsIgnoreCase`. That method compares UTF-16 code units with the
-     * (`toUpperCase`, then `toLowerCase` from uppercase) pair, so normalising each code unit with
-     * exactly the same pair yields the identical equivalence relation:
+     * The original code compared candidate keys with `String.equals(ignoreCase = true)`, which on
+     * the Android runtime compares UTF-16 code units with the (`toUpperCase`, then `toLowerCase`
+     * from uppercase) pair, so normalising each code unit with exactly the same pair yields the
+     * identical equivalence relation:
      *
-     * - two strings fold to the same key iff `equalsIgnoreCase` is true for them;
+     * - two strings fold to the same key iff `equalsIgnoreCase` is true for them on device;
      * - every string folds to a same-length key, so distinct characters can never merge by accident.
+     *
+     * The "on device" qualifier matters: newer desktop JDKs (17 and later) widened
+     * `equalsIgnoreCase` to compare supplementary code points case-insensitively, while the
+     * Android runtime (all API levels) still compares code unit by code unit. Following the newer
+     * JDK relation here would merge device libraries the old code kept separate, so the fold
+     * deliberately stays with the device relation and the tests pin that relation explicitly
+     * instead of following the running JDK.
      *
      * Deliberately *not* `lowercase()`: `lowercase()` applies the one-to-many Unicode mappings of
      * the root locale, so it splits pairs that `equalsIgnoreCase` merges (U+017F `ſ` vs `s`, U+03C2

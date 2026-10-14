@@ -15,6 +15,14 @@ import java.util.Random
  * candidate key. Anything that is not character-for-character identical to it can silently split or
  * merge groups, so it is asserted exhaustively over the code units that have any case behaviour at
  * all, and by randomised comparison for multi-character strings.
+ *
+ * The pinned contract is the relation as it behaves on the Android runtime: one UTF-16 code unit
+ * at a time with the (`toUpperCase`, then `toLowerCase`) pair (verified against the API-37
+ * `String.regionMatches` sources, unchanged since the Dalvik era, so it holds from minSdk up).
+ * Newer desktop JDKs (17 and later) widened `equalsIgnoreCase` to compare supplementary code
+ * points case-insensitively (e.g. Deseret U+10400 vs U+10428), while the device runtime keeps them
+ * separate. Supplementary-plane assertions therefore pin [charBasedEqualsIgnoreCase] instead of
+ * following the running JDK, or this suite would go red on newer JDKs without any product change.
  */
 class LibraryGroupingCaseFoldTest {
 
@@ -70,8 +78,11 @@ class LibraryGroupingCaseFoldTest {
 
     @Test
     fun `folded key equals equalsIgnoreCase for supplementary plane code points`() {
-        // equalsIgnoreCase compares surrogate pairs as two code units, so folding must neither
-        // merge nor split them. Deseret and Osmaniya carry full case pairs beyond the BMP.
+        // equalsIgnoreCase compares surrogate pairs as two code units on the device runtime, so
+        // folding must neither merge nor split them. Deseret and Osmaniya carry full case pairs
+        // beyond the BMP. The oracle is the pinned device relation, not the running JDK: newer
+        // desktop JDKs merge some of these pairs (e.g. Deseret long I) while Android keeps them
+        // separate, and the grouping must follow the device.
         val units = listOf(
             "\uD801\uDC00", "\uD801\uDC28", "\uD801\uDC51", "\uD801\uDC79",
             "\uD801\uDC01", "\uD801\uDC29", "\uD801\uDC52", "\uD801\uDC7A",
@@ -83,11 +94,31 @@ class LibraryGroupingCaseFoldTest {
                 assertEquals(
                     "supplementary plane disagreement for ${hex(left.codePointAt(0))} / " +
                         "${hex(right.codePointAt(0))}",
-                    left.equals(right, ignoreCase = true),
+                    charBasedEqualsIgnoreCase(left, right),
                     LibraryGrouping.caseFold(left) == LibraryGrouping.caseFold(right)
                 )
             }
         }
+    }
+
+    @Test
+    fun `supplementary Deseret case pairs stay separate under the pinned device relation`() {
+        // U+10400 DESERET CAPITAL LETTER LONG I vs U+10428 DESERET SMALL LETTER LONG I: desktop
+        // JDKs since 17 report these equal ignoring case, but the Android runtime (all API levels,
+        // verified against the API-37 sources) compares them as two differing code units, exactly
+        // like the previous inline implementation did on device. The grouping must keep them apart
+        // on every runtime; regressing to the running JDK's relation would merge device libraries
+        // that the old code kept separate.
+        val upper = "\uD801\uDC00" // U+10400 DESERET CAPITAL LETTER LONG I
+        val lower = "\uD801\uDC28" // U+10428 DESERET SMALL LETTER LONG I
+        assertFalse(
+            "device relation must keep Deseret long I apart",
+            charBasedEqualsIgnoreCase(upper, lower)
+        )
+        assertFalse(
+            "fold must keep Deseret long I apart",
+            LibraryGrouping.caseFold(upper) == LibraryGrouping.caseFold(lower)
+        )
     }
 
     @Test
@@ -176,4 +207,30 @@ class LibraryGroupingCaseFoldTest {
     }
 
     private fun hex(code: Int) = "U+" + Integer.toHexString(code).uppercase()
+}
+
+/**
+ * The case-insensitive relation as it behaves on the Android runtime: the strings must have the
+ * same length and every UTF-16 code unit must match after the (`toUpperCase`, then `toLowerCase`
+ * from uppercase) pair. This mirrors AOSP `String.regionMatches(ignoreCase = true)` (verified
+ * against the API-37 sources; unchanged since the Dalvik era) and pre-17 OpenJDK behaviour.
+ *
+ * Newer desktop JDKs (17+) compare supplementary code points case-insensitively, so the running
+ * JDK's `equals(ignoreCase = true)` can no longer serve as the oracle for supplementary-plane
+ * assertions: it would merge pairs (e.g. Deseret U+10400 vs U+10428) that the device runtime —
+ * and therefore the shipped grouping — keeps separate.
+ */
+internal fun charBasedEqualsIgnoreCase(left: String, right: String): Boolean {
+    if (left.length != right.length) return false
+    for (index in left.indices) {
+        val c1 = left[index]
+        val c2 = right[index]
+        if (c1 == c2) continue
+        val u1 = Character.toUpperCase(c1)
+        val u2 = Character.toUpperCase(c2)
+        if (u1 == u2) continue
+        if (Character.toLowerCase(u1) == Character.toLowerCase(u2)) continue
+        return false
+    }
+    return true
 }
