@@ -32,7 +32,8 @@ class PlaybackController(
     private val onTracksChanged: (Tracks, Uri?) -> Unit,
     private val onShuffleChanged: (Boolean) -> Unit,
     private val onRepeatChanged: (Int) -> Unit,
-    private val onProgress: (Long, Long) -> Unit
+    private val onProgress: (Long, Long) -> Unit,
+    private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> }
 ) {
     var player: MediaController? = null
         private set
@@ -64,6 +65,22 @@ class PlaybackController(
 
                     override fun onMediaMetadataChanged(metadata: MediaMetadata) {
                         onMetadataChanged(metadata, currentUri())
+                    }
+
+                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        handleMediaItemTransition(mediaItem)
+                        onProgress(
+                            mediaController.currentPosition,
+                            mediaController.duration.coerceAtLeast(0L)
+                        )
+                    }
+
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int
+                    ) {
+                        onProgress(newPosition.positionMs, mediaController.duration.coerceAtLeast(0L))
                     }
 
                     override fun onTracksChanged(tracks: Tracks) {
@@ -221,7 +238,16 @@ class PlaybackController(
     }
 
     fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
-    fun seekTo(position: Long) { player?.seekTo(position) }
+    fun seekTo(position: Long) {
+        player?.let { mediaController ->
+            val duration = mediaController.duration.coerceAtLeast(0L)
+            val target = position.coerceAtLeast(0L).let { requested ->
+                if (duration > 0L) requested.coerceAtMost(duration) else requested
+            }
+            mediaController.seekTo(target)
+            onProgress(target, duration)
+        }
+    }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
     fun setShuffle(enabled: Boolean) { player?.shuffleModeEnabled = enabled }
@@ -266,6 +292,12 @@ class PlaybackController(
     }
 
     fun currentUri(): Uri? = player?.currentMediaItem?.localConfiguration?.uri
+
+    internal fun handleMediaItemTransition(mediaItem: MediaItem?) {
+        val metadata = mediaItem?.mediaMetadata ?: MediaMetadata.Builder().build()
+        val uri = mediaItem?.localConfiguration?.uri ?: currentUri()
+        onMediaItemTransition(metadata, uri)
+    }
 
     private fun startProgressUpdates() {
         progressJob?.cancel()
