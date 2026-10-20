@@ -100,6 +100,28 @@ class TagRecoveryManagerDeviceTest {
     }
 
     @Test
+    fun failedLegacyAudioVerificationKeepsSourcePairIntact() {
+        val legacy = File(context.filesDir, "tag-recovery").apply { mkdirs() }
+        val name = "recovery_verification_failure.flac"
+        val audioBytes = byteArrayOf(4, 5, 6, 7)
+        val audio = File(legacy, name).apply { writeBytes(audioBytes) }
+        val metadataContent =
+            """{"originalUri":"content://provider/document/verification-failure","createdAt":123456,"reason":"Verification failed","recoveryFile":"$name"}"""
+        val metadata = File(legacy, "$name.json").apply { writeText(metadataContent) }
+        val manager = TagRecoveryManager(context) { _, destination ->
+            destination.writeBytes(byteArrayOf(0, 0, 0, 0))
+        }
+
+        val entry = manager.entries().single()
+
+        assertTrue(entry.metadataValid)
+        assertEquals(audio, entry.audioFile)
+        assertTrue(audio.readBytes().contentEquals(audioBytes))
+        assertEquals(metadataContent, metadata.readText())
+        assertFalse(File(TagRecoveryManager.recoveryDirectory(context), name).exists())
+    }
+
+    @Test
     fun duplicateNameCollisionPreservesLegacyPairAndDoesNotOverwrite() {
         val legacy = File(context.filesDir, "tag-recovery").apply { mkdirs() }
         val destination = TagRecoveryManager.recoveryDirectory(context).apply { mkdirs() }
