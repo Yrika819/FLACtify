@@ -81,6 +81,37 @@ class TagRecoveryManagerTest {
     }
 
     @Test
+    fun `streamed file comparison handles matching and mismatching contents`() {
+        val contents = ByteArray(150_000) { (it % 251).toByte() }
+        val matchingFile = File(root, "matching.bin").apply { writeBytes(contents) }
+        val sameLengthMismatch = File(root, "same-length-mismatch.bin").apply {
+            writeBytes(contents.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() })
+        }
+        val differentLength = File(root, "different-length.bin").apply { writeBytes(contents.copyOf(contents.size - 1)) }
+
+        assertTrue(filesHaveSameContent(matchingFile, File(root, "matching-copy.bin").apply { writeBytes(contents) }))
+        assertFalse(filesHaveSameContent(matchingFile, sameLengthMismatch))
+        assertFalse(filesHaveSameContent(matchingFile, differentLength))
+    }
+
+    @Test
+    fun `streamed file comparison handles empty files and 64 KiB boundaries`() {
+        val empty = File(root, "empty.bin").apply { writeBytes(byteArrayOf()) }
+        assertTrue(filesHaveSameContent(empty, File(root, "empty-copy.bin").apply { writeBytes(byteArrayOf()) }))
+
+        for (size in listOf(64 * 1024 - 1, 64 * 1024, 64 * 1024 + 1, 128 * 1024)) {
+            val contents = ByteArray(size) { (it % 251).toByte() }
+            val first = File(root, "boundary-$size.bin").apply { writeBytes(contents) }
+            val copy = File(root, "boundary-$size-copy.bin").apply { writeBytes(contents.copyOf()) }
+            assertTrue("identical $size-byte files", filesHaveSameContent(first, copy))
+
+            contents[contents.lastIndex] = (contents.last() + 1).toByte()
+            val mismatch = File(root, "boundary-$size-mismatch.bin").apply { writeBytes(contents) }
+            assertFalse("different $size-byte files", filesHaveSameContent(first, mismatch))
+        }
+    }
+
+    @Test
     fun `capacity limit requires managing entries and retains existing copies`() {
         val directory = TagRecoveryManager.recoveryDirectory(context).apply { mkdirs() }
         repeat(3) { File(directory, "recovery_$it.flac").writeBytes(byteArrayOf(it.toByte())) }

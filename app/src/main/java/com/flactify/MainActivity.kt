@@ -2,6 +2,7 @@ package com.flactify
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +21,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,7 +64,12 @@ class MainActivity : ComponentActivity() {
             val startupState by viewModel.startupState.collectAsState()
             val currentThemeColor by viewModel.themeColor.collectAsState()
 
-            var currentScreen by remember { mutableStateOf("splash") }
+            var currentScreen by rememberSaveable { mutableStateOf("splash") }
+            val screenStateHolder = rememberSaveableStateHolder()
+
+            BackHandler(enabled = currentScreen == "library" || currentScreen == "settings") {
+                currentScreen = "player"
+            }
 
             // 🚀 【サクサク起動】キャッシュから復元できた時点／検証が始まった時点でスプラッシュを終える。
             // 以前はライブラリ全走査の完了(isReady)までスプラッシュを引っ張っていたが、キャッシュ復元後は
@@ -69,9 +77,9 @@ class MainActivity : ComponentActivity() {
             // ロゴのまま全走査を待たせず、読み込み中のプレイヤーを先に出す。
             val leaveSplash = isDataReady || startupState !is StartupState.Initializing
             LaunchedEffect(leaveSplash) {
-                if (leaveSplash) {
+                splashCompletionTarget(currentScreen, leaveSplash)?.let { target ->
                     delay(100)
-                    currentScreen = "player"
+                    currentScreen = target
                 }
             }
 
@@ -106,7 +114,8 @@ class MainActivity : ComponentActivity() {
                         targetState = currentScreen,
                         animationSpec = tween(durationMillis = 150)
                     ) { screen ->
-                        when (screen) {
+                        screenStateHolder.SaveableStateProvider(screen) {
+                            when (screen) {
                             "splash" -> {
                                 AnimatedSplashScreen()
                             }
@@ -130,6 +139,7 @@ class MainActivity : ComponentActivity() {
                                     onBackClick = { currentScreen = "player" }
                                 )
                             }
+                            }
                         }
                     }
                 }
@@ -137,6 +147,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+internal fun splashCompletionTarget(currentScreen: String, leaveSplash: Boolean): String? =
+    if (leaveSplash && currentScreen == "splash") "player" else null
 
 @androidx.compose.runtime.Composable
 fun AnimatedSplashScreen() {

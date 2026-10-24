@@ -174,6 +174,11 @@ android {
         debug {
             applicationIdSuffix = ".spatialdev"
         }
+        create("foundationClosure") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".foundationclosure"
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

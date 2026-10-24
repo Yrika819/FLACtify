@@ -253,6 +253,9 @@ class PlayerViewModelLibraryGroupingConflictTest {
         // edit's rebuild. The tag edit is the newer intention, so it is the one that publishes.
         val occupied = occupyDefaultWorkers()
         val switch = harness.background { it.viewModel.performDirectoryLoad(it.context, harness.b) }
+        // Establish the operation order before starting the edit. Merely launching both IO
+        // coroutines in order does not guarantee which one captures its library generation first.
+        harness.awaitGeneration(beforeSwitch + 1)
         val edited = original[0]
         val edit = harness.background {
             it.viewModel.performUpdateTrackTags(
@@ -338,6 +341,12 @@ class PlayerViewModelLibraryGroupingConflictTest {
         assertGroupsEqual(expected.artistMap, harness.viewModel.artistMap.value)
         assertGroupsEqual(expected.albumMap, harness.viewModel.albumMap.value)
         assertEquals(expected.tracks.map { it.title }, harness.viewModel.trackList.value)
+        val editedArtistTrack = harness.viewModel.artistMap.value.getValue("alpha")
+            .single { it.uri == edited.uri }
+        assertEquals("ALPHA", editedArtistTrack.artist)
+        assertEquals("ONE", editedArtistTrack.album)
+        assertEquals("1", editedArtistTrack.trackNumber)
+        assertTrue("tag edit timestamp was not published", editedArtistTrack.lastModified > 0L)
         // The renamed track joins the existing case-equal group instead of creating a new one.
         assertEquals(2, harness.viewModel.artistMap.value.size)
         assertEquals(2, harness.viewModel.albumMap.value.size)
@@ -501,13 +510,15 @@ class PlayerViewModelLibraryGroupingConflictTest {
 
     // ── Assertions ──
 
-    /** `Map.equals` ignores key order, which the library UI depends on, so compare it explicitly. */
+    /**
+     * Checks grouping structure independently of metadata value equality. Tag-edit tests can update
+     * fields such as track number and lastModified without changing group membership.
+     */
     private fun assertGroupsEqual(
         expected: Map<String, List<TrackData>>,
         actual: Map<String, List<TrackData>>,
         message: String? = null
     ) {
-        assertEquals(message, expected, actual)
         assertEquals(message ?: "group display order", expected.keys.toList(), actual.keys.toList())
         expected.forEach { (key, tracks) ->
             assertEquals(

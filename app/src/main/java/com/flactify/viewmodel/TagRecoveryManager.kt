@@ -5,6 +5,53 @@ import android.net.Uri
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+
+internal fun filesHaveSameContent(first: File, second: File): Boolean {
+    if (!first.isFile || !second.isFile || first.length() != second.length()) return false
+
+    return first.inputStream().buffered().use { firstInput ->
+        second.inputStream().buffered().use { secondInput ->
+            val firstBuffer = ByteArray(64 * 1024)
+            val secondBuffer = ByteArray(64 * 1024)
+            var equal = true
+            var complete = false
+            while (equal && !complete) {
+                val firstCount = readChunk(firstInput, firstBuffer)
+                val secondCount = readChunk(secondInput, secondBuffer)
+                if (firstCount != secondCount) {
+                    equal = false
+                } else if (firstCount == -1) {
+                    complete = true
+                } else {
+                    for (index in 0 until firstCount) {
+                        if (firstBuffer[index] != secondBuffer[index]) {
+                            equal = false
+                            break
+                        }
+                    }
+                }
+            }
+            equal && complete
+        }
+    }
+}
+
+private fun readChunk(input: InputStream, buffer: ByteArray): Int {
+    var totalRead = 0
+    while (totalRead < buffer.size) {
+        val count = input.read(buffer, totalRead, buffer.size - totalRead)
+        if (count < 0) return if (totalRead == 0) -1 else totalRead
+        if (count == 0) {
+            val nextByte = input.read()
+            if (nextByte < 0) return if (totalRead == 0) -1 else totalRead
+            buffer[totalRead++] = nextByte.toByte()
+        } else {
+            totalRead += count
+        }
+    }
+    return totalRead
+}
 
 /** Owns user-manageable tag-edit recovery copies in private, non-backed-up storage. */
 class TagRecoveryManager(
@@ -68,17 +115,15 @@ class TagRecoveryManager(
             if (!sourceMetadata.isFile || parseMetadata(sourceMetadata, id, sourceAudio) == null) continue
             if (!destinationDirectory.exists() && !destinationDirectory.mkdirs()) continue
             try {
-                if (targetAudio.exists() && !targetAudio.readBytes().contentEquals(sourceAudio.readBytes())) continue
-                if (targetMetadata.exists() && !targetMetadata.readBytes()
-                        .contentEquals(sourceMetadata.readBytes())
-                ) continue
+                if (targetAudio.exists() && !filesHaveSameContent(targetAudio, sourceAudio)) continue
+                if (targetMetadata.exists() && !filesHaveSameContent(targetMetadata, sourceMetadata)) continue
                 if (!targetAudio.exists()) {
                     val stagedAudio = File.createTempFile("migration_", ".audio", destinationDirectory)
                     try {
                         migrationCopy(sourceAudio, stagedAudio)
-                        if (!stagedAudio.readBytes()
-                                .contentEquals(sourceAudio.readBytes())
-                        ) throw IOException("Recovery audio migration did not verify")
+                        if (!filesHaveSameContent(stagedAudio, sourceAudio)) {
+                            throw IOException("Recovery audio migration did not verify")
+                        }
                         if (!stagedAudio.renameTo(targetAudio)) throw IOException("Unable to commit recovery audio migration")
                     } finally {
                         stagedAudio.delete()
@@ -88,7 +133,7 @@ class TagRecoveryManager(
                     val stagedMetadata = File.createTempFile("migration_", ".metadata", destinationDirectory)
                     try {
                         migrationCopy(sourceMetadata, stagedMetadata)
-                        if (!stagedMetadata.readBytes().contentEquals(sourceMetadata.readBytes()) || parseMetadata(
+                        if (!filesHaveSameContent(stagedMetadata, sourceMetadata) || parseMetadata(
                                 stagedMetadata,
                                 id,
                                 targetAudio
@@ -102,8 +147,8 @@ class TagRecoveryManager(
                     }
                 }
                 if (parseMetadata(targetMetadata, id, targetAudio) != null &&
-                    targetAudio.readBytes().contentEquals(sourceAudio.readBytes()) &&
-                    targetMetadata.readBytes().contentEquals(sourceMetadata.readBytes())
+                    filesHaveSameContent(targetAudio, sourceAudio) &&
+                    filesHaveSameContent(targetMetadata, sourceMetadata)
                 ) {
                     sourceAudio.delete()
                     sourceMetadata.delete()
