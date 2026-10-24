@@ -95,6 +95,23 @@ class TagRecoveryManagerTest {
     }
 
     @Test
+    fun `streamed file comparison handles empty files and 64 KiB boundaries`() {
+        val empty = File(root, "empty.bin").apply { writeBytes(byteArrayOf()) }
+        assertTrue(filesHaveSameContent(empty, File(root, "empty-copy.bin").apply { writeBytes(byteArrayOf()) }))
+
+        for (size in listOf(64 * 1024 - 1, 64 * 1024, 64 * 1024 + 1, 128 * 1024)) {
+            val contents = ByteArray(size) { (it % 251).toByte() }
+            val first = File(root, "boundary-$size.bin").apply { writeBytes(contents) }
+            val copy = File(root, "boundary-$size-copy.bin").apply { writeBytes(contents.copyOf()) }
+            assertTrue("identical $size-byte files", filesHaveSameContent(first, copy))
+
+            contents[contents.lastIndex] = (contents.last() + 1).toByte()
+            val mismatch = File(root, "boundary-$size-mismatch.bin").apply { writeBytes(contents) }
+            assertFalse("different $size-byte files", filesHaveSameContent(first, mismatch))
+        }
+    }
+
+    @Test
     fun `capacity limit requires managing entries and retains existing copies`() {
         val directory = TagRecoveryManager.recoveryDirectory(context).apply { mkdirs() }
         repeat(3) { File(directory, "recovery_$it.flac").writeBytes(byteArrayOf(it.toByte())) }
