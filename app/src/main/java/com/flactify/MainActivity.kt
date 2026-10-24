@@ -77,9 +77,9 @@ class MainActivity : ComponentActivity() {
             // ロゴのまま全走査を待たせず、読み込み中のプレイヤーを先に出す。
             val leaveSplash = isDataReady || startupState !is StartupState.Initializing
             LaunchedEffect(leaveSplash) {
-                if (leaveSplash && currentScreen == "splash") {
+                splashCompletionTarget(currentScreen, leaveSplash)?.let { target ->
                     delay(100)
-                    currentScreen = "player"
+                    currentScreen = target
                 }
             }
 
@@ -147,6 +147,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+internal fun splashCompletionTarget(currentScreen: String, leaveSplash: Boolean): String? =
+    if (leaveSplash && currentScreen == "splash") "player" else null
 
 @androidx.compose.runtime.Composable
 fun AnimatedSplashScreen() {
