@@ -33,6 +33,57 @@ class PlayerViewModelPlaybackTimeTest {
     }
 
     @Test
+    fun `a transient unresolved duration keeps the last resolved value within a track`() {
+        val viewModel = PlayerViewModel()
+        try {
+            viewModel.applyPlaybackProgress(1_000L, 212_000L)
+
+            // Media3 can briefly report C.TIME_UNSET while the same item rebuffers or
+            // re-prepares. The last authoritative length must survive inside that item.
+            viewModel.applyPlaybackProgress(2_000L, null)
+
+            assertEquals(212_000L, viewModel.duration.value ?: -1L)
+            assertEquals(2_000L, viewModel.currentPosition.value)
+        } finally {
+            viewModel.cleanup()
+        }
+    }
+
+    @Test
+    fun `a media item transition drops the previous item's resolved duration`() {
+        val viewModel = PlayerViewModel()
+        try {
+            viewModel.applyPlaybackProgress(4_000L, 212_000L)
+
+            viewModel.handlePlaybackMediaItemTransition(
+                mockk(relaxed = true),
+                androidx.media3.common.MediaMetadata.EMPTY,
+                null
+            )
+
+            assertNull(viewModel.duration.value)
+            assertEquals(0L, viewModel.currentPosition.value)
+        } finally {
+            viewModel.cleanup()
+        }
+    }
+
+    @Test
+    fun `idle playback drops the resolved duration`() {
+        val viewModel = PlayerViewModel()
+        try {
+            viewModel.applyPlaybackProgress(4_000L, 212_000L)
+
+            viewModel.onPlaybackIdle()
+
+            assertNull(viewModel.duration.value)
+            assertEquals(0L, viewModel.currentPosition.value)
+        } finally {
+            viewModel.cleanup()
+        }
+    }
+
+    @Test
     fun `a zero duration is a resolved length and not unknown`() {
         val viewModel = PlayerViewModel()
         try {

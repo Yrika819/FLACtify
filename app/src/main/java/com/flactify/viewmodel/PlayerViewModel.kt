@@ -450,19 +450,9 @@ class PlayerViewModel : ViewModel() {
                 }
             },
             onMediaItemTransition = { metadata, uri ->
-                if (uri == null) {
-                    _currentTrackName.value = "未再生"
-                    _currentArtist.value = ""
-                } else {
-                    _currentTrackName.value = metadata.title?.toString() ?: "不明"
-                    _currentArtist.value = metadata.artist?.toString() ?: "不明なアーティスト"
-                }
-                _currentPosition.value = 0L
-                // Drop the previous item's duration synchronously; the new item publishes its own
-                // once Media3 reports READY. Never carry a stale time across a transition.
-                _duration.value = null
-                updateTrackDetails(appContext, uri)
-            }
+                handlePlaybackMediaItemTransition(appContext, metadata, uri)
+            },
+            onPlaybackIdle = { onPlaybackIdle() }
         )
         playbackController?.initialize(
             context = appContext,
@@ -472,7 +462,7 @@ class PlayerViewModel : ViewModel() {
                     _currentTrackName.value = "未再生"
                     _currentArtist.value = ""
                     _currentPosition.value = 0L
-                    _duration.value = null
+                    invalidatePlaybackDuration()
                     updateTrackDetails(appContext, null)
                 }
                 val lastUriStr = sharedPreferences?.getString("last_uri", null)
@@ -1052,12 +1042,47 @@ class PlayerViewModel : ViewModel() {
     }
 
     /**
-     * Applies one position/duration report. An unresolved duration stays null, so the UI can show
-     * "--:--" while still receiving a valid position (paused, READY, or just after a transition).
+     * Applies one position/duration report. An unresolved duration only means "not known right
+     * now"; inside the same item it must not erase the last authoritative value. Track changes,
+     * queue loss, and IDLE invalidate the value explicitly instead.
      */
     internal fun applyPlaybackProgress(positionMs: Long, durationMs: Long?) {
         _currentPosition.value = positionMs.coerceAtLeast(0L)
-        _duration.value = durationMs
+        if (durationMs != null) {
+            _duration.value = durationMs
+        }
+    }
+
+    /** Drops the resolved duration after the item that owned it is no longer current. */
+    internal fun invalidatePlaybackDuration() {
+        _duration.value = null
+    }
+
+    /** IDLE or a removed queue means no item owns the current position or duration anymore. */
+    internal fun onPlaybackIdle() {
+        _currentPosition.value = 0L
+        invalidatePlaybackDuration()
+    }
+
+    /**
+     * Applies a media-item transition synchronously. The new item starts at zero and publishes its
+     * own duration once Media3 resolves it; the previous item's time must never survive this call.
+     */
+    internal fun handlePlaybackMediaItemTransition(
+        context: Context,
+        metadata: androidx.media3.common.MediaMetadata,
+        uri: Uri?
+    ) {
+        if (uri == null) {
+            _currentTrackName.value = "未再生"
+            _currentArtist.value = ""
+        } else {
+            _currentTrackName.value = metadata.title?.toString() ?: "不明"
+            _currentArtist.value = metadata.artist?.toString() ?: "不明なアーティスト"
+        }
+        _currentPosition.value = 0L
+        invalidatePlaybackDuration()
+        updateTrackDetails(context, uri)
     }
 
     fun seekTo(pos: Long) {

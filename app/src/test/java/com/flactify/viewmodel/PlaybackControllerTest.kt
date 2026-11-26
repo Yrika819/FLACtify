@@ -321,6 +321,27 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `idle playback invalidates the resolved duration`() {
+        val player = mockk<MediaController>(relaxed = true)
+        var idleInvalidations = 0
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { _, _ -> },
+            onPlaybackIdle = { idleInvalidations++ }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onPlaybackStateChanged(Player.STATE_IDLE)
+
+        assertEquals(1, idleInvalidations)
+    }
+
+    @Test
     fun `seekTo does not clamp against an unresolved duration`() {
         val player = mockk<MediaController>(relaxed = true)
         every { player.duration } returns androidx.media3.common.C.TIME_UNSET

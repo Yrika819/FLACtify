@@ -36,7 +36,9 @@ class PlaybackController(
      *  player has not resolved it yet (Media3 [androidx.media3.common.C.TIME_UNSET]), so an
      *  unknown duration never looks like a genuine zero-length item. */
     private val onProgress: (Long, Long?) -> Unit,
-    private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> }
+    private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> },
+    /** The queue vanished or the player became idle; the current item no longer owns its time. */
+    private val onPlaybackIdle: () -> Unit = {}
 ) {
     var player: MediaController? = null
         private set
@@ -93,8 +95,10 @@ class PlaybackController(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 // A prepared (READY) or finished (ENDED) item has an authoritative duration even
                 // while playback is paused, so the UI must not wait for the 250 ms playing loop.
-                if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
-                    publishPositionAndDuration(mediaController)
+                when (playbackState) {
+                    Player.STATE_READY, Player.STATE_ENDED -> publishPositionAndDuration(mediaController)
+                    // IDLE means the item was stopped or removed; keep no duration for it.
+                    Player.STATE_IDLE -> onPlaybackIdle()
                 }
             }
 
@@ -123,6 +127,7 @@ class PlaybackController(
         player?.let { mediaController ->
             onPlayingChanged(mediaController.isPlaying)
             if (mediaController.currentMediaItem == null) {
+                onPlaybackIdle()
                 onIdle()
             } else {
                 onMetadataChanged(mediaController.mediaMetadata, currentUri())
