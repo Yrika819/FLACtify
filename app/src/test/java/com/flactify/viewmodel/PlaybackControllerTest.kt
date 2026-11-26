@@ -13,6 +13,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -195,6 +196,64 @@ class PlaybackControllerTest {
 
         verify(exactly = 1) { player.clearMediaItems() }
         verify(exactly = 1) { player.prepare() }
+    }
+
+    @Test
+    fun `seekTo publishes the requested position while playback is paused`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns 60_000L
+        val progressUpdates = mutableListOf<Pair<Long, Long>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.seekTo(12_345L)
+
+        verify(exactly = 1) { player.seekTo(12_345L) }
+        assertEquals(listOf(12_345L to 60_000L), progressUpdates)
+    }
+
+    @Test
+    fun `media item transition reports a new URI even when metadata labels are unchanged`() {
+        val uri = mockk<Uri>(relaxed = true)
+        every { uri.toString() } returns "content://track/second"
+        val item = androidx.media3.common.MediaItem.Builder()
+            .setMediaId(uri.toString())
+            .setUri(uri)
+            .setMediaMetadata(
+                androidx.media3.common.MediaMetadata.Builder()
+                    .setTitle("Same title")
+                    .setArtist("Same artist")
+                    .setAlbumTitle("Same album")
+                    .build()
+            )
+            .build()
+        var transition: Pair<androidx.media3.common.MediaMetadata, Uri?>? = null
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { _, _ -> },
+            onMediaItemTransition = { metadata, transitionedUri ->
+                transition = metadata to transitionedUri
+            }
+        )
+
+        controller.handleMediaItemTransition(item)
+
+        assertEquals(uri, transition?.second)
+        assertEquals("Same title", transition?.first?.title?.toString())
+        assertEquals("Same artist", transition?.first?.artist?.toString())
     }
 
     private fun newController(player: MediaController): PlaybackController {
