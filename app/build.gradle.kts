@@ -140,6 +140,10 @@ android {
     namespace = "com.flactify"
     compileSdk = 36
 
+    // Phase 4C test-only selector: AGP binds androidTest to exactly one build type.
+    // Default stays "debug"; only -PflactifyTestBuildType=foundationClosure changes it.
+    testBuildType = providers.gradleProperty("flactifyTestBuildType").getOrElse("debug")
+
     defaultConfig {
         applicationId = "com.flactify"
         minSdk = 26
@@ -332,4 +336,14 @@ dependencies {
     }
 
 
+}
+
+// Phase 4C test-only: foundationClosure has no debug-only SpatialPcmCapture classes,
+// so exclude that single androidTest source only for the foundationClosure androidTest compile.
+if (providers.gradleProperty("flactifyTestBuildType").isPresent) {
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>()
+        .matching { it.name == "compileFoundationClosureAndroidTestKotlin" }
+        .configureEach {
+            (this as org.gradle.api.tasks.util.PatternFilterable).exclude("**/PlaybackServiceSpatialPcmCaptureDeviceTest.kt")
+        }
 }
