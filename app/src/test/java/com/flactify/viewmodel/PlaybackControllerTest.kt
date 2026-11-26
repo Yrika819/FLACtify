@@ -202,7 +202,7 @@ class PlaybackControllerTest {
     fun `seekTo publishes the requested position while playback is paused`() {
         val player = mockk<MediaController>(relaxed = true)
         every { player.duration } returns 60_000L
-        val progressUpdates = mutableListOf<Pair<Long, Long>>()
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
         val controller = PlaybackController(
             scope = CoroutineScope(Dispatchers.Unconfined),
             onPlayingChanged = {},
@@ -218,6 +218,76 @@ class PlaybackControllerTest {
 
         verify(exactly = 1) { player.seekTo(12_345L) }
         assertEquals(listOf(12_345L to 60_000L), progressUpdates)
+    }
+
+    @Test
+    fun `media item transition reports an unresolved duration as unknown`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns androidx.media3.common.C.TIME_UNSET
+        every { player.currentPosition } returns 0L
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onMediaItemTransition(
+            null,
+            Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
+        )
+
+        assertEquals(listOf(0L to null), progressUpdates)
+    }
+
+    @Test
+    fun `ready state publishes a resolved duration while playback is paused`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns 245_000L
+        every { player.currentPosition } returns 12_000L
+        every { player.isPlaying } returns false
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onPlaybackStateChanged(Player.STATE_READY)
+
+        assertEquals(listOf(12_000L to 245_000L), progressUpdates)
+    }
+
+    @Test
+    fun `seekTo does not clamp against an unresolved duration`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns androidx.media3.common.C.TIME_UNSET
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.seekTo(90_000L)
+
+        verify(exactly = 1) { player.seekTo(90_000L) }
+        assertEquals(listOf(90_000L to null), progressUpdates)
     }
 
     @Test

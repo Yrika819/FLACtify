@@ -32,7 +32,10 @@ class PlaybackController(
     private val onTracksChanged: (Tracks, Uri?) -> Unit,
     private val onShuffleChanged: (Boolean) -> Unit,
     private val onRepeatChanged: (Int) -> Unit,
-    private val onProgress: (Long, Long) -> Unit,
+    /** Reports the position and the duration in milliseconds. The duration is null while the
+     *  player has not resolved it yet (Media3 [androidx.media3.common.C.TIME_UNSET]), so an
+     *  unknown duration never looks like a genuine zero-length item. */
+    private val onProgress: (Long, Long?) -> Unit,
     private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> }
 ) {
     var player: MediaController? = null
@@ -57,44 +60,7 @@ class PlaybackController(
                     return@addListener
                 }
                 player = mediaController
-                val controllerListener = object : Player.Listener {
-                    override fun onIsPlayingChanged(playing: Boolean) {
-                        onPlayingChanged(playing)
-                        if (playing) startProgressUpdates()
-                    }
-
-                    override fun onMediaMetadataChanged(metadata: MediaMetadata) {
-                        onMetadataChanged(metadata, currentUri())
-                    }
-
-                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        handleMediaItemTransition(mediaItem)
-                        onProgress(
-                            mediaController.currentPosition,
-                            mediaController.duration.coerceAtLeast(0L)
-                        )
-                    }
-
-                    override fun onPositionDiscontinuity(
-                        oldPosition: Player.PositionInfo,
-                        newPosition: Player.PositionInfo,
-                        reason: Int
-                    ) {
-                        onProgress(newPosition.positionMs, mediaController.duration.coerceAtLeast(0L))
-                    }
-
-                    override fun onTracksChanged(tracks: Tracks) {
-                        onTracksChanged(tracks, currentUri())
-                    }
-
-                    override fun onShuffleModeEnabledChanged(enabled: Boolean) {
-                        onShuffleChanged(enabled)
-                    }
-
-                    override fun onRepeatModeChanged(mode: Int) {
-                        onRepeatChanged(mode)
-                    }
-                }
+                val controllerListener = createControllerListener(mediaController)
                 listener = controllerListener
                 mediaController.addListener(controllerListener)
                 onReady(mediaController)
@@ -104,6 +70,55 @@ class PlaybackController(
         }, MoreExecutors.directExecutor())
     }
 
+    /**
+     * The controller listener is a separate factory so the reporting contract (transition,
+     * discontinuity, READY/ENDED duration publication) can be exercised without a live session.
+     */
+    internal fun createControllerListener(mediaController: MediaController): Player.Listener =
+        object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                onPlayingChanged(playing)
+                if (playing) startProgressUpdates()
+            }
+
+            override fun onMediaMetadataChanged(metadata: MediaMetadata) {
+                onMetadataChanged(metadata, currentUri())
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                handleMediaItemTransition(mediaItem)
+                publishPositionAndDuration(mediaController)
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                // A prepared (READY) or finished (ENDED) item has an authoritative duration even
+                // while playback is paused, so the UI must not wait for the 250 ms playing loop.
+                if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                    publishPositionAndDuration(mediaController)
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                publishPositionAndDuration(mediaController, newPosition.positionMs)
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                onTracksChanged(tracks, currentUri())
+            }
+
+            override fun onShuffleModeEnabledChanged(enabled: Boolean) {
+                onShuffleChanged(enabled)
+            }
+
+            override fun onRepeatModeChanged(mode: Int) {
+                onRepeatChanged(mode)
+            }
+        }
+
     fun syncState(onIdle: () -> Unit = {}) {
         player?.let { mediaController ->
             onPlayingChanged(mediaController.isPlaying)
@@ -112,7 +127,7 @@ class PlaybackController(
             } else {
                 onMetadataChanged(mediaController.mediaMetadata, currentUri())
             }
-            onProgress(mediaController.currentPosition, mediaController.duration.coerceAtLeast(0L))
+            publishPositionAndDuration(mediaController)
             onShuffleChanged(mediaController.shuffleModeEnabled)
             onRepeatChanged(mediaController.repeatMode)
             if (mediaController.isPlaying) startProgressUpdates()
@@ -240,9 +255,10 @@ class PlaybackController(
     fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
     fun seekTo(position: Long) {
         player?.let { mediaController ->
-            val duration = mediaController.duration.coerceAtLeast(0L)
+            // Unknown duration is not a zero-length item: only clamp when the duration is known.
+            val duration = durationOrNull(mediaController.duration)
             val target = position.coerceAtLeast(0L).let { requested ->
-                if (duration > 0L) requested.coerceAtMost(duration) else requested
+                duration?.let { requested.coerceAtMost(it) } ?: requested
             }
             mediaController.seekTo(target)
             onProgress(target, duration)
@@ -299,11 +315,22 @@ class PlaybackController(
         onMediaItemTransition(metadata, uri)
     }
 
+    private fun publishPositionAndDuration(mediaController: MediaController) {
+        publishPositionAndDuration(mediaController, mediaController.currentPosition)
+    }
+
+    private fun publishPositionAndDuration(mediaController: MediaController, positionMs: Long) {
+        onProgress(positionMs.coerceAtLeast(0L), durationOrNull(mediaController.duration))
+    }
+
+    /** Media3 reports an unresolved duration as C.TIME_UNSET; a genuine zero stays zero. */
+    private fun durationOrNull(durationMs: Long): Long? = durationMs.takeIf { it >= 0L }
+
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = scope.launch {
             while (player?.isPlaying == true) {
-                player?.let { onProgress(it.currentPosition, it.duration) }
+                player?.let { publishPositionAndDuration(it) }
                 delay(250)
             }
         }

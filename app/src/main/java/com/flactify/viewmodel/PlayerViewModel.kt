@@ -244,8 +244,10 @@ class PlayerViewModel : ViewModel() {
     private val _currentPosition = MutableStateFlow(0L)
     val currentPosition: StateFlow<Long> = _currentPosition
 
-    private val _duration = MutableStateFlow(0L)
-    val duration: StateFlow<Long> = _duration
+    // Null means the player has not resolved the duration yet (Media3 C.TIME_UNSET). The UI
+    // renders that as "--:--" instead of a fake 00:00 or a stale value from the previous item.
+    private val _duration = MutableStateFlow<Long?>(null)
+    val duration: StateFlow<Long?> = _duration
 
     private val _isShuffleMode = MutableStateFlow(false)
     val isShuffleMode: StateFlow<Boolean> = _isShuffleMode
@@ -432,9 +434,10 @@ class PlayerViewModel : ViewModel() {
                 sharedPreferences?.edit()?.putInt("repeat", mode)?.apply()
             },
             onProgress = { position, duration ->
-                if (duration > 0) {
-                    _currentPosition.value = position
-                    _duration.value = duration
+                // The position is meaningful even while the duration is still unknown (READY or
+                // paused); publish both so the time display never waits for playback to start.
+                applyPlaybackProgress(position, duration)
+                if (position > 0L) {
                     // UI updates stay at the 250 ms poll rate; only the persister decides
                     // whether this tick is worth a disk write.
                     positionPersister.onProgress(playbackController?.currentUri()?.toString(), position)
@@ -455,7 +458,9 @@ class PlayerViewModel : ViewModel() {
                     _currentArtist.value = metadata.artist?.toString() ?: "不明なアーティスト"
                 }
                 _currentPosition.value = 0L
-                _duration.value = 0L
+                // Drop the previous item's duration synchronously; the new item publishes its own
+                // once Media3 reports READY. Never carry a stale time across a transition.
+                _duration.value = null
                 updateTrackDetails(appContext, uri)
             }
         )
@@ -466,6 +471,8 @@ class PlayerViewModel : ViewModel() {
                 playbackController?.syncState {
                     _currentTrackName.value = "未再生"
                     _currentArtist.value = ""
+                    _currentPosition.value = 0L
+                    _duration.value = null
                     updateTrackDetails(appContext, null)
                 }
                 val lastUriStr = sharedPreferences?.getString("last_uri", null)
@@ -1044,8 +1051,20 @@ class PlayerViewModel : ViewModel() {
         playbackController?.playPause()
     }
 
+    /**
+     * Applies one position/duration report. An unresolved duration stays null, so the UI can show
+     * "--:--" while still receiving a valid position (paused, READY, or just after a transition).
+     */
+    internal fun applyPlaybackProgress(positionMs: Long, durationMs: Long?) {
+        _currentPosition.value = positionMs.coerceAtLeast(0L)
+        _duration.value = durationMs
+    }
+
     fun seekTo(pos: Long) {
-        playbackController?.seekTo(pos)
+        // An unresolved duration must not be seeked against: the request would clamp against an
+        // arbitrary bound and the slider has nothing meaningful to map to yet.
+        val duration = _duration.value?.takeIf { it > 0L } ?: return
+        playbackController?.seekTo(pos.coerceIn(0L, duration))
     }
 
     fun next() {
