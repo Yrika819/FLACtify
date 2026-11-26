@@ -234,6 +234,24 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `setPlaylist requests a round when restoring a shuffle queue`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        every { player.currentMediaItemIndex } returns 0
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 },
+            restoreUri = Uri.parse("content://two"), restorePosition = 0L,
+            restoreShuffle = true, restoreRepeat = Player.REPEAT_MODE_OFF
+        )
+
+        // Process regeneration restores the queue, then re-establishes the round at the resume item.
+        verify(exactly = 1) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
     fun `setPlaylist rebuilds once when a track is added`() {
         val initial = listOf(track("One", "content://one"))
         val player = mediaControllerWithQueue(initial)
