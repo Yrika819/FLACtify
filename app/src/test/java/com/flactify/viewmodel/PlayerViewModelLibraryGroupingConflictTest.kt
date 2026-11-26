@@ -253,6 +253,9 @@ class PlayerViewModelLibraryGroupingConflictTest {
         // edit's rebuild. The tag edit is the newer intention, so it is the one that publishes.
         val occupied = occupyDefaultWorkers()
         val switch = harness.background { it.viewModel.performDirectoryLoad(it.context, harness.b) }
+        // Establish the operation order before starting the edit. Merely launching both IO
+        // coroutines in order does not guarantee which one captures its library generation first.
+        harness.awaitGeneration(beforeSwitch + 1)
         val edited = original[0]
         val edit = harness.background {
             it.viewModel.performUpdateTrackTags(
