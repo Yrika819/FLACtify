@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -146,20 +149,42 @@ fun LibraryScreen(
     val isShuffleMode by viewModel.isShuffleMode.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
 
-    var selectedTab by remember { mutableStateOf("artists") }
-    var selectedArtist by remember { mutableStateOf<String?>(null) }
-    var selectedAlbum by remember { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf("artists") }
+    var selectedArtist by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedAlbum by rememberSaveable { mutableStateOf<String?>(null) }
 
     var editingTrack by remember { mutableStateOf<TrackData?>(null) }
     var showPlaylistPicker by remember { mutableStateOf<TrackData?>(null) }
     var showCreatePlaylist by remember { mutableStateOf(false) }
-    var showPlaylistContent by remember { mutableStateOf<String?>(null) }
+    var showPlaylistContent by rememberSaveable { mutableStateOf<String?>(null) }
 
-    var searchQuery by remember { mutableStateOf("") }
-    var showFavoritesOnly by remember { mutableStateOf(false) }
-    var sortMode by remember { mutableStateOf(TrackSortMode.TITLE) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var showFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var sortMode by rememberSaveable { mutableStateOf(TrackSortMode.TITLE) }
     var showSortMenu by remember { mutableStateOf(false) }
-    var showScanFailures by remember { mutableStateOf(false) }
+    var showScanFailures by rememberSaveable { mutableStateOf(false) }
+
+    val tabContentStateHolder = rememberSaveableStateHolder()
+    val tabContentKey = when {
+        selectedTab == "artists" && selectedArtist != null -> "artist:$selectedArtist"
+        selectedTab == "albums" && selectedAlbum != null -> "album:$selectedAlbum"
+        selectedTab == "playlists" && showPlaylistContent != null -> "playlist:$showPlaylistContent"
+        else -> selectedTab
+    }
+    val backAction = libraryBackAction(selectedTab, selectedArtist, selectedAlbum, showPlaylistContent)
+
+    fun handleBackClick() {
+        when (backAction) {
+            LibraryBackAction.CLOSE_PLAYLIST -> showPlaylistContent = null
+            LibraryBackAction.CLOSE_ARTIST -> selectedArtist = null
+            LibraryBackAction.CLOSE_ALBUM -> selectedAlbum = null
+            LibraryBackAction.EXIT_LIBRARY -> onBackClick()
+        }
+    }
+
+    BackHandler(enabled = backAction != LibraryBackAction.EXIT_LIBRARY) {
+        handleBackClick()
+    }
 
     fun sortTracks(tracks: List<TrackData>): List<TrackData> = when (sortMode) {
         TrackSortMode.TITLE -> tracks.sortedBy { it.title.lowercase() }
@@ -230,14 +255,7 @@ fun LibraryScreen(
                         )
                     },
                     navigationIcon = {
-                        IconButton(onClick = {
-                            when {
-                                showPlaylistContent != null -> showPlaylistContent = null
-                                selectedTab == "artists" && selectedArtist != null -> selectedArtist = null
-                                selectedTab == "albums" && selectedAlbum != null -> selectedAlbum = null
-                                else -> onBackClick()
-                            }
-                        }) {
+                        IconButton(onClick = { handleBackClick() }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "戻る", tint = Color.White)
                         }
                     },
@@ -352,7 +370,8 @@ fun LibraryScreen(
                             }
                         }
                     }
-                    when (selectedTab) {
+                    tabContentStateHolder.SaveableStateProvider(tabContentKey) {
+                        when (selectedTab) {
                         "playlists" -> PlaylistsTab(viewModel, playlists, showPlaylistContent, onShowPlaylist = { showPlaylistContent = it }, onCreatePlaylist = { showCreatePlaylist = true })
                         "recommendations" -> {
                             LaunchedEffect(Unit) { viewModel.loadRecommendations() }
@@ -384,7 +403,7 @@ fun LibraryScreen(
                             } else {
                                 val filteredSongs = sortTracks(filterTracks(artistMap[selectedArtist] ?: emptyList()))
                                 SongListHeader(isShuffleMode, repeatMode, viewModel)
-                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onBackClick = onBackClick, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playArtistTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playArtistTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
                             }
                         }
                         "albums" -> {
@@ -414,11 +433,12 @@ fun LibraryScreen(
                             } else {
                                 val filteredSongs = sortTracks(filterTracks(albumMap[selectedAlbum] ?: emptyList()))
                                 SongListHeader(isShuffleMode, repeatMode, viewModel)
-                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onBackClick = onBackClick, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAlbumTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAlbumTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
                             }
                         }
                         else -> {
-                            SongLazyColumn(songs = allSongsList, viewModel = viewModel, onBackClick = onBackClick, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                            SongLazyColumn(songs = allSongsList, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                        }
                         }
                     }
                 }
@@ -435,8 +455,11 @@ fun LibraryScreen(
             CreatePlaylistDialog(viewModel = viewModel, onDismiss = { showCreatePlaylist = false })
         }
         if (showPlaylistContent != null) {
-            val tracks = viewModel.getPlaylistTracks(showPlaylistContent!!, artistMap.values.flatten())
-            SongLazyColumn(songs = tracks, viewModel = viewModel, onBackClick = { showPlaylistContent = null }, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = {})
+            val playlistId = showPlaylistContent!!
+            val tracks = viewModel.getPlaylistTracks(playlistId, artistMap.values.flatten())
+            tabContentStateHolder.SaveableStateProvider("playlist-content:$playlistId") {
+                SongLazyColumn(songs = tracks, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = {})
+            }
         }
     }
 }
@@ -730,7 +753,7 @@ private fun SongListHeader(isShuffleMode: Boolean, repeatMode: Int, viewModel: P
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SongLazyColumn(
-    songs: List<TrackData>, viewModel: PlayerViewModel, onBackClick: () -> Unit,
+    songs: List<TrackData>, viewModel: PlayerViewModel,
     onTrackLongClick: (TrackData) -> Unit, onFavoriteClick: (TrackData) -> Unit,
     onPlayAction: (Context, List<TrackData>, Int) -> Unit, onAddToPlaylist: (TrackData) -> Unit
 ) {
@@ -741,7 +764,7 @@ private fun SongLazyColumn(
             Row(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0x12FFFFFF))
                     .combinedClickable(
-                        onClick = { onPlayAction(context, songs, idx); onBackClick() },
+                        onClick = { onPlayAction(context, songs, idx) },
                         onLongClick = { onTrackLongClick(trackData) }
                     )
                     .padding(horizontal = 16.dp, vertical = 10.dp),
