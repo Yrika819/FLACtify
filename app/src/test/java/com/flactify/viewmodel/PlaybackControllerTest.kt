@@ -90,6 +90,22 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `setPlaylist does not rebuild the round for an unchanged queue`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        every { player.shuffleModeEnabled } returns true
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 }
+        )
+
+        // A library refresh with no queue change must not restart the active round.
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
     fun `setPlaylist does not request a round when shuffle is explicitly off`() {
         val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
         val player = mediaControllerWithQueue(tracks)

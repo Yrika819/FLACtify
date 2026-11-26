@@ -162,7 +162,10 @@ class PlaybackController(
         if (mediaController.hasMediaItems(desiredItems)) {
             restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
             restoreRepeat?.let { mediaController.repeatMode = it }
-            if (restoreShuffle != false) {
+            // Only an explicit restore needs a round on an unchanged queue. A library refresh
+            // with no queue change must leave the active round alone; enabling shuffle is already
+            // handled by the service listener.
+            if (restoreShuffle == true) {
                 startShuffleRoundFromCurrentItem(
                     mediaController,
                     PlaybackShuffleRound.requestFor(
