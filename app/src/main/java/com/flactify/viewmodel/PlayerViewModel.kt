@@ -57,7 +57,10 @@ sealed interface StartupState {
     data class Error(val message: String, val keptProvisionalLibrary: Boolean) : StartupState
 }
 
-// 🚀 【データクラス】重複比較ができるように equals/hashCode を明示的にオーバーライド
+/**
+ * Metadata value for one library entry. URI identity is used explicitly by library deduplication;
+ * value equality must still observe edits to metadata and artwork.
+ */
 data class TrackData(
     val title: String,
     val artist: String,
@@ -76,12 +79,41 @@ data class TrackData(
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as TrackData
-        return uri == other.uri
+        if (other !is TrackData) return false
+
+        return title == other.title &&
+            artist == other.artist &&
+            album == other.album &&
+            trackNumber == other.trackNumber &&
+            genre == other.genre &&
+            year == other.year &&
+            composer == other.composer &&
+            albumArtist == other.albumArtist &&
+            discNumber == other.discNumber &&
+            comment == other.comment &&
+            originalIndex == other.originalIndex &&
+            uri == other.uri &&
+            java.util.Arrays.equals(albumArtBytes, other.albumArtBytes) &&
+            lastModified == other.lastModified
     }
 
-    override fun hashCode(): Int = uri.hashCode()
+    override fun hashCode(): Int {
+        var result = title.hashCode()
+        result = 31 * result + artist.hashCode()
+        result = 31 * result + album.hashCode()
+        result = 31 * result + (trackNumber?.hashCode() ?: 0)
+        result = 31 * result + (genre?.hashCode() ?: 0)
+        result = 31 * result + (year?.hashCode() ?: 0)
+        result = 31 * result + (composer?.hashCode() ?: 0)
+        result = 31 * result + (albumArtist?.hashCode() ?: 0)
+        result = 31 * result + (discNumber?.hashCode() ?: 0)
+        result = 31 * result + (comment?.hashCode() ?: 0)
+        result = 31 * result + originalIndex
+        result = 31 * result + uri.hashCode()
+        result = 31 * result + java.util.Arrays.hashCode(albumArtBytes)
+        result = 31 * result + lastModified.hashCode()
+        return result
+    }
 }
 
 /** Guards ViewModel-owned services from being installed again after Activity recreation. */
