@@ -1,5 +1,7 @@
 package com.flactify.audio
 
+import androidx.media3.common.C
+import androidx.media3.common.Player
 import com.flactify.audio.spatial.SpatialPipelineInfo
 import java.util.concurrent.atomic.AtomicLong
 
@@ -143,6 +145,18 @@ data class Media3AudioSinkInfo(
         val UNKNOWN = Media3AudioSinkInfo()
     }
 }
+
+/**
+ * The playback order the service player is actually using.
+ *
+ * [shuffleOrderLastIndex] is the terminal window of the active shuffle permutation and is the only
+ * index eligible to drain the final HRTF tail when shuffle is on and repeat is off.
+ */
+data class PlaybackOrderInfo(
+    val repeatMode: Int = Player.REPEAT_MODE_OFF,
+    val shuffleModeEnabled: Boolean = false,
+    val shuffleOrderLastIndex: Int = C.INDEX_UNSET
+)
 
 internal class Media3AudioSinkEventCounter {
     private val eventCount = AtomicLong()

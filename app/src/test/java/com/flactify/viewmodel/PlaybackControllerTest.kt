@@ -43,21 +43,16 @@ class PlaybackControllerTest {
     }
 
     @Test
-    fun `enabling shuffle requests a round starting at the current item`() {
+    fun `enabling shuffle waits for the service instead of sending a duplicate round command`() {
         val player = mockk<MediaController>(relaxed = true)
         val controller = newController(player)
 
         controller.setShuffle(true)
 
         verify { player.shuffleModeEnabled = true }
-        verify(exactly = 1) {
-            player.sendCustomCommand(
-                match {
-                    it.customAction == com.flactify.PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND
-                },
-                any()
-            )
-        }
+        // PlaybackService.onShuffleModeEnabledChanged owns the round. Sending a second command
+        // here made the service rebuild the same round twice.
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
     }
 
     @Test
@@ -92,6 +87,21 @@ class PlaybackControllerTest {
                 any()
             )
         }
+    }
+
+    @Test
+    fun `setPlaylist does not request a round when shuffle is explicitly off`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 },
+            restoreShuffle = false
+        )
+
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
     }
 
     @Test

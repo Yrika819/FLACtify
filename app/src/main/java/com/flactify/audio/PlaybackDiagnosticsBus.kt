@@ -28,6 +28,9 @@ object PlaybackDiagnosticsBus {
     private val _media3AudioSink = MutableStateFlow(Media3AudioSinkInfo.UNKNOWN)
     val media3AudioSink: StateFlow<Media3AudioSinkInfo> = _media3AudioSink.asStateFlow()
 
+    private val _playbackOrder = MutableStateFlow(PlaybackOrderInfo())
+    val playbackOrder: StateFlow<PlaybackOrderInfo> = _playbackOrder.asStateFlow()
+
     fun publishRendererFormat(info: RendererFormatInfo) {
         // The decoder name is a separate fact arriving on a separate callback; keep it rather
         // than letting a later format-only update blank it.
@@ -44,6 +47,10 @@ object PlaybackDiagnosticsBus {
 
     fun publishMedia3AudioSink(info: Media3AudioSinkInfo) {
         _media3AudioSink.value = info
+    }
+
+    fun publishPlaybackOrder(info: PlaybackOrderInfo) {
+        _playbackOrder.value = info
     }
 
     fun publishSpatial(info: SpatialPipelineInfo) {

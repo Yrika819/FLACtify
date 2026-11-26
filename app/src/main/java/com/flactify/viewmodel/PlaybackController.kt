@@ -15,6 +15,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import com.flactify.PlaybackService
+import com.flactify.PlaybackShuffleRound
 import com.flactify.audio.spatial.SpatialAudioMode
 import com.flactify.audio.spatial.SpatialHrtfMixPercent
 import com.google.common.util.concurrent.MoreExecutors
@@ -161,7 +162,15 @@ class PlaybackController(
         if (mediaController.hasMediaItems(desiredItems)) {
             restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
             restoreRepeat?.let { mediaController.repeatMode = it }
-            startShuffleRoundFromCurrentItem(mediaController)
+            if (restoreShuffle != false) {
+                startShuffleRoundFromCurrentItem(
+                    mediaController,
+                    PlaybackShuffleRound.requestFor(
+                        desiredItems.map(MediaItem::mediaId),
+                        mediaController.currentMediaItemIndex
+                    )
+                )
+            }
             return
         }
 
@@ -176,19 +185,38 @@ class PlaybackController(
         if (tracks.isNotEmpty()) {
             val resumeIndex = restoreUri?.let { uri -> tracks.indexOfFirst { it.uri == uri } } ?: -1
             val targetIndex = if (resumeIndex >= 0) resumeIndex else resolveTargetIndex(tracks, currentUri, forceRandom)
-            if (resumeIndex >= 0) {
+            val effectiveIndex = if (resumeIndex >= 0) {
                 mediaController.seekTo(targetIndex, restorePosition.coerceAtLeast(0L))
+                targetIndex
             } else if (forceRandom || currentUri == null) {
                 mediaController.seekTo(targetIndex, 0L)
+                targetIndex
             } else {
                 val newIndex = tracks.indexOfFirst { it.uri == currentUri }
-                if (newIndex != -1) mediaController.seekTo(newIndex, currentPosition)
-                else mediaController.seekTo(targetIndex, 0L)
-                if (wasPlaying) mediaController.play()
+                (
+                    if (newIndex != -1) {
+                        mediaController.seekTo(newIndex, currentPosition)
+                        newIndex
+                    } else {
+                        mediaController.seekTo(targetIndex, 0L)
+                        targetIndex
+                    }
+                ).also {
+                    if (wasPlaying) mediaController.play()
+                }
             }
             // The queue was rebuilt: make sure a shuffle round starts at the restored/selected item
-            // instead of somewhere inside Media3's previous permutation.
-            startShuffleRoundFromCurrentItem(mediaController)
+            // instead of somewhere inside Media3's previous permutation. The request carries the
+            // intended index because MediaController reflects session state asynchronously.
+            if (restoreShuffle != false) {
+                startShuffleRoundFromCurrentItem(
+                    mediaController,
+                    PlaybackShuffleRound.requestFor(
+                        desiredItems.map(MediaItem::mediaId),
+                        effectiveIndex
+                    )
+                )
+            }
         }
     }
 
@@ -243,23 +271,14 @@ class PlaybackController(
         mimeType: (String) -> String
     ) {
         val mediaController = player ?: return
-        mediaController.setMediaItems(tracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.uri.toString())
-                .setUri(track.uri)
-                .setMimeType(mimeType(fileExtension(track.uri)))
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.title)
-                        .setArtist(track.artist)
-                        .setAlbumTitle(track.album)
-                        .build()
-                )
-                .build()
-        }, initialIndex, 0L)
+        val items = buildMediaItems(tracks, fileExtension, mimeType)
+        mediaController.setMediaItems(items, initialIndex, 0L)
         mediaController.prepare()
         mediaController.play()
-        startShuffleRoundFromCurrentItem(mediaController)
+        startShuffleRoundFromCurrentItem(
+            mediaController,
+            PlaybackShuffleRound.requestFor(items.map(MediaItem::mediaId), initialIndex)
+        )
     }
 
     fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
@@ -277,10 +296,10 @@ class PlaybackController(
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
     fun setShuffle(enabled: Boolean) {
-        player?.let { mediaController ->
-            mediaController.shuffleModeEnabled = enabled
-            if (enabled) startShuffleRoundFromCurrentItem(mediaController)
-        }
+        // The service starts the round from onShuffleModeEnabledChanged, which also covers
+        // notification/Bluetooth/other-controller changes. Sending a command here as well made
+        // the service rebuild the same round twice.
+        player?.shuffleModeEnabled = enabled
     }
 
     /**
@@ -288,13 +307,23 @@ class PlaybackController(
      * service owns the ExoPlayer, and MediaController exposes no setShuffleOrder(), so this rides
      * on the same trusted-session-command pattern as the spatial audio command.
      */
-    private fun startShuffleRoundFromCurrentItem(mediaController: MediaController) {
-        // No shuffleModeEnabled read here: MediaController reflects session state asynchronously,
-        // so a just-enabled shuffle mode would still read false. The service decides against the
-        // authoritative ExoPlayer state when the command arrives.
+    private fun startShuffleRoundFromCurrentItem(
+        mediaController: MediaController,
+        request: PlaybackShuffleRound.Request?
+    ) {
+        // The request describes the queue the app just loaded, not the asynchronously reflected
+        // controller state. The service compares it with its authoritative queue and current item.
+        if (request == null) return
         mediaController.sendCustomCommand(
             SessionCommand(PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND, Bundle()),
-            Bundle()
+            Bundle().apply {
+                putLong(
+                    PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_QUEUE_FINGERPRINT,
+                    request.queueFingerprint
+                )
+                putInt(PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_ITEM_COUNT, request.itemCount)
+                putInt(PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_START_INDEX, request.startIndex)
+            }
         )
     }
     fun setRepeat(mode: Int) { player?.repeatMode = mode }
