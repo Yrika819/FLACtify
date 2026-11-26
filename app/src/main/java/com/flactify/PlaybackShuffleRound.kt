@@ -118,19 +118,20 @@ internal object PlaybackShuffleRound {
         state: State
     ): Decision {
         if (!shuffleModeEnabled) return Decision.SHUFFLE_DISABLED
+        // Queue identity is checked before the size shortcut so a delayed command for an old
+        // queue cannot be reported as a successful no-op after that queue was cleared.
+        if (request != null &&
+            (request.itemCount != state.itemCount ||
+                request.queueFingerprint != state.queueFingerprint)
+        ) {
+            return Decision.STALE_QUEUE
+        }
         if (state.itemCount <= 1) return Decision.NOTHING_TO_REORDER
         if (state.currentIndex !in 0 until state.itemCount) {
             return Decision.NOTHING_TO_REORDER
         }
-        if (request != null) {
-            if (request.itemCount != state.itemCount ||
-                request.queueFingerprint != state.queueFingerprint
-            ) {
-                return Decision.STALE_QUEUE
-            }
-            if (request.startIndex != state.currentIndex) {
-                return Decision.STALE_ITEM
-            }
+        if (request != null && request.startIndex != state.currentIndex) {
+            return Decision.STALE_ITEM
         }
         if (state.activeOrderLength == state.itemCount &&
             state.activeOrderFirstIndex == state.currentIndex

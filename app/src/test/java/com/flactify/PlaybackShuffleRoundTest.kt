@@ -178,6 +178,26 @@ class PlaybackShuffleRoundTest {
     }
 
     @Test
+    fun `a delayed request for a cleared queue is rejected as stale`() {
+        val decision = PlaybackShuffleRound.decide(
+            request = PlaybackShuffleRound.requestFor(
+                listOf("content://a", "content://b"),
+                0
+            ),
+            shuffleModeEnabled = true,
+            state = PlaybackShuffleRound.State(
+                itemCount = 0,
+                currentIndex = androidx.media3.common.C.INDEX_UNSET,
+                queueFingerprint = PlaybackShuffleRound.queueFingerprint(emptyList()),
+                activeOrderLength = 0,
+                activeOrderFirstIndex = androidx.media3.common.C.INDEX_UNSET
+            )
+        )
+
+        assertEquals(PlaybackShuffleRound.Decision.STALE_QUEUE, decision)
+    }
+
+    @Test
     fun `a one-item queue has no round to rebuild`() {
         val ids = listOf("content://only")
 
