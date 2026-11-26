@@ -156,6 +156,7 @@ class PlaybackController(
         if (mediaController.hasMediaItems(desiredItems)) {
             restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
             restoreRepeat?.let { mediaController.repeatMode = it }
+            startShuffleRoundFromCurrentItem(mediaController)
             return
         }
 
@@ -180,6 +181,9 @@ class PlaybackController(
                 else mediaController.seekTo(targetIndex, 0L)
                 if (wasPlaying) mediaController.play()
             }
+            // The queue was rebuilt: make sure a shuffle round starts at the restored/selected item
+            // instead of somewhere inside Media3's previous permutation.
+            startShuffleRoundFromCurrentItem(mediaController)
         }
     }
 
@@ -250,6 +254,7 @@ class PlaybackController(
         }, initialIndex, 0L)
         mediaController.prepare()
         mediaController.play()
+        startShuffleRoundFromCurrentItem(mediaController)
     }
 
     fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
@@ -266,7 +271,27 @@ class PlaybackController(
     }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
-    fun setShuffle(enabled: Boolean) { player?.shuffleModeEnabled = enabled }
+    fun setShuffle(enabled: Boolean) {
+        player?.let { mediaController ->
+            mediaController.shuffleModeEnabled = enabled
+            if (enabled) startShuffleRoundFromCurrentItem(mediaController)
+        }
+    }
+
+    /**
+     * Asks the service to rebuild the active shuffle order with the current item first. Only the
+     * service owns the ExoPlayer, and MediaController exposes no setShuffleOrder(), so this rides
+     * on the same trusted-session-command pattern as the spatial audio command.
+     */
+    private fun startShuffleRoundFromCurrentItem(mediaController: MediaController) {
+        // No shuffleModeEnabled read here: MediaController reflects session state asynchronously,
+        // so a just-enabled shuffle mode would still read false. The service decides against the
+        // authoritative ExoPlayer state when the command arrives.
+        mediaController.sendCustomCommand(
+            SessionCommand(PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND, Bundle()),
+            Bundle()
+        )
+    }
     fun setRepeat(mode: Int) { player?.repeatMode = mode }
     fun pause() { player?.pause() }
 

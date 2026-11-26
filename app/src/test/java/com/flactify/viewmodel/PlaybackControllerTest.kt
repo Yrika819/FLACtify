@@ -43,6 +43,58 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `enabling shuffle requests a round starting at the current item`() {
+        val player = mockk<MediaController>(relaxed = true)
+        val controller = newController(player)
+
+        controller.setShuffle(true)
+
+        verify { player.shuffleModeEnabled = true }
+        verify(exactly = 1) {
+            player.sendCustomCommand(
+                match {
+                    it.customAction == com.flactify.PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND
+                },
+                any()
+            )
+        }
+    }
+
+    @Test
+    fun `disabling shuffle keeps the queue order`() {
+        val player = mockk<MediaController>(relaxed = true)
+        val controller = newController(player)
+
+        controller.setShuffle(false)
+
+        verify { player.shuffleModeEnabled = false }
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
+    fun `playTracks starts a shuffle round for the new queue`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.currentMediaItem } returns null
+        val controller = newController(player)
+
+        controller.playTracks(
+            listOf(track("One", "content://one"), track("Two", "content://two")),
+            1,
+            { "flac" },
+            { "audio/flac" }
+        )
+
+        verify(exactly = 1) {
+            player.sendCustomCommand(
+                match {
+                    it.customAction == com.flactify.PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND
+                },
+                any()
+            )
+        }
+    }
+
+    @Test
     fun `cleanup releases player reference`() {
         val player = mockk<MediaController>(relaxed = true)
         val listener = mockk<Player.Listener>()

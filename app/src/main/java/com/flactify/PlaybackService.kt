@@ -10,6 +10,7 @@ import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -17,6 +18,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioTrackAudioOutputProvider
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ShuffleOrder
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaNotification
@@ -74,6 +76,12 @@ open class PlaybackService : MediaSessionService() {
     private var pendingFadeInListener: Player.Listener? = null
 
     companion object {
+        /**
+         * Trusted-controller command: rebuild the shuffle order so the current item starts the
+         * round. MediaController cannot call ExoPlayer.setShuffleOrder, so the service owns it.
+         */
+        const val SESSION_COMMAND_START_SHUFFLE_ROUND = "com.flactify.START_SHUFFLE_ROUND"
+
         /** Read local SAF tracks directly; duplicating them can waste storage and reuse stale
          * spans after an in-place metadata edit changes the FLAC frame offset. */
         fun getPlaybackDataSourceFactory(service: Context): DefaultDataSource.Factory =
@@ -82,6 +90,10 @@ open class PlaybackService : MediaSessionService() {
 
     private val spatialSessionCommand by lazy {
         SessionCommand(SpatialAudioMode.SESSION_COMMAND_ACTION, Bundle.EMPTY)
+    }
+
+    private val shuffleRoundSessionCommand by lazy {
+        SessionCommand(SESSION_COMMAND_START_SHUFFLE_ROUND, Bundle.EMPTY)
     }
 
     private val spatialSessionCallback = object : MediaSession.Callback {
@@ -95,6 +107,7 @@ open class PlaybackService : MediaSessionService() {
                     MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
                         .buildUpon()
                         .add(spatialSessionCommand)
+                        .add(shuffleRoundSessionCommand)
                         .build()
                 )
             }
@@ -107,6 +120,13 @@ open class PlaybackService : MediaSessionService() {
             customCommand: SessionCommand,
             args: Bundle
         ): ListenableFuture<SessionResult> {
+            if (customCommand.customAction == SESSION_COMMAND_START_SHUFFLE_ROUND) {
+                // Cheap and idempotent: rebuild the active shuffle order so the item that is
+                // playing right now is the first item of the round.
+                mainHandler.post { startShuffleRoundFromCurrentItem() }
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+
             if (customCommand.customAction != SpatialAudioMode.SESSION_COMMAND_ACTION) {
                 return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             }
@@ -268,29 +288,58 @@ open class PlaybackService : MediaSessionService() {
                 onMedia3AudioSink = { PlaybackDiagnosticsBus.publishMedia3AudioSink(it) }
             )
         )
-        spatialPlaybackQueueState.updatePlaybackOrder(
-            target.repeatMode,
-            target.shuffleModeEnabled
-        )
+        publishPlaybackOrder(target)
         target.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 PlaybackDiagnosticsBus.resetForMediaItemTransition()
             }
 
             override fun onRepeatModeChanged(repeatMode: Int) {
-                spatialPlaybackQueueState.updatePlaybackOrder(
-                    repeatMode,
-                    target.shuffleModeEnabled
-                )
+                publishPlaybackOrder(target)
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                spatialPlaybackQueueState.updatePlaybackOrder(
-                    target.repeatMode,
-                    shuffleModeEnabled
-                )
+                publishPlaybackOrder(target)
+                // Shuffle can also be switched on from outside the app UI (notification, Bluetooth,
+                // another controller). Starting the round here keeps that path identical.
+                if (shuffleModeEnabled) startShuffleRoundFromCurrentItem()
+            }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                // Queue mutations clone/insert into the shuffle order, so the terminal index of
+                // the active order can move without a shuffle-mode change.
+                publishPlaybackOrder(target)
             }
         })
+    }
+
+    private fun publishPlaybackOrder(target: ExoPlayer) {
+        spatialPlaybackQueueState.updatePlaybackOrder(
+            target.repeatMode,
+            target.shuffleModeEnabled,
+            target.shuffleOrder.lastIndex
+        )
+    }
+
+    /**
+     * Rebuilds the active shuffle order so the current item is the first item of the round.
+     *
+     * Media3's default shuffle order can start anywhere in the permutation. When the user starts
+     * from an arbitrary item, auto-advance then stops at the end of the permutation and the items
+     * before the start position are never played. Making the current item the head keeps repeat
+     * OFF to exactly one full pass, repeat ALL to a new round after that pass, and repeat ONE
+     * untouched.
+     */
+    private fun startShuffleRoundFromCurrentItem() {
+        if (!::player.isInitialized) return
+        val order = PlaybackShuffleRound.orderStartingAt(
+            player.mediaItemCount,
+            player.currentMediaItemIndex
+        ) ?: return
+        player.setShuffleOrder(
+            ShuffleOrder.DefaultShuffleOrder(order, kotlin.random.Random.nextLong())
+        )
+        publishPlaybackOrder(player)
     }
 
     private fun replacePlayerForSpatialConfig(
