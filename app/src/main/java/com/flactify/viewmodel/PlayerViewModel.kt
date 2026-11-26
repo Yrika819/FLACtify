@@ -57,7 +57,10 @@ sealed interface StartupState {
     data class Error(val message: String, val keptProvisionalLibrary: Boolean) : StartupState
 }
 
-// 🚀 【データクラス】重複比較ができるように equals/hashCode を明示的にオーバーライド
+/**
+ * Metadata value for one library entry. URI identity is used explicitly by library deduplication;
+ * value equality must still observe edits to metadata and artwork.
+ */
 data class TrackData(
     val title: String,
     val artist: String,
@@ -76,12 +79,41 @@ data class TrackData(
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as TrackData
-        return uri == other.uri
+        if (other !is TrackData) return false
+
+        return title == other.title &&
+            artist == other.artist &&
+            album == other.album &&
+            trackNumber == other.trackNumber &&
+            genre == other.genre &&
+            year == other.year &&
+            composer == other.composer &&
+            albumArtist == other.albumArtist &&
+            discNumber == other.discNumber &&
+            comment == other.comment &&
+            originalIndex == other.originalIndex &&
+            uri == other.uri &&
+            java.util.Arrays.equals(albumArtBytes, other.albumArtBytes) &&
+            lastModified == other.lastModified
     }
 
-    override fun hashCode(): Int = uri.hashCode()
+    override fun hashCode(): Int {
+        var result = title.hashCode()
+        result = 31 * result + artist.hashCode()
+        result = 31 * result + album.hashCode()
+        result = 31 * result + (trackNumber?.hashCode() ?: 0)
+        result = 31 * result + (genre?.hashCode() ?: 0)
+        result = 31 * result + (year?.hashCode() ?: 0)
+        result = 31 * result + (composer?.hashCode() ?: 0)
+        result = 31 * result + (albumArtist?.hashCode() ?: 0)
+        result = 31 * result + (discNumber?.hashCode() ?: 0)
+        result = 31 * result + (comment?.hashCode() ?: 0)
+        result = 31 * result + originalIndex
+        result = 31 * result + uri.hashCode()
+        result = 31 * result + java.util.Arrays.hashCode(albumArtBytes)
+        result = 31 * result + lastModified.hashCode()
+        return result
+    }
 }
 
 /** Guards ViewModel-owned services from being installed again after Activity recreation. */
@@ -251,6 +283,7 @@ class PlayerViewModel : ViewModel() {
 
     /** URI whose details are currently displayed, used to skip duplicate extractions. */
     private var detailsUri: Uri? = null
+    private var detailsGeneration = 0L
 
     /** True once [detailsUri] finished loading, so a re-announce can be skipped outright. */
     private var detailsSettled = false
@@ -412,6 +445,18 @@ class PlayerViewModel : ViewModel() {
                                 ?.apply()
                         }
                 }
+            },
+            onMediaItemTransition = { metadata, uri ->
+                if (uri == null) {
+                    _currentTrackName.value = "未再生"
+                    _currentArtist.value = ""
+                } else {
+                    _currentTrackName.value = metadata.title?.toString() ?: "不明"
+                    _currentArtist.value = metadata.artist?.toString() ?: "不明なアーティスト"
+                }
+                _currentPosition.value = 0L
+                _duration.value = 0L
+                updateTrackDetails(appContext, uri)
             }
         )
         playbackController?.initialize(
@@ -450,6 +495,11 @@ class PlayerViewModel : ViewModel() {
 
     private fun updateTrackDetails(context: Context, uri: Uri?) {
         if (uri == null) {
+            detailsGeneration++
+            metadataJob?.cancel()
+            metadataJob = null
+            diagnosticsJob?.cancel()
+            diagnosticsJob = null
             _albumArt.value = null
             _themeColor.value = android.graphics.Color.parseColor("#121212")
             _lyrics.value = emptyList()
@@ -467,11 +517,17 @@ class PlayerViewModel : ViewModel() {
         // flight. A failed load leaves the state unsettled so a later re-announce retries.
         if (uri == detailsUri && (detailsSettled || metadataJob?.isActive == true)) return
         detailsUri = uri
+        val requestGeneration = ++detailsGeneration
         detailsSettled = false
         metadataJob?.cancel()
+        metadataJob = null
         diagnosticsJob?.cancel()
-        // Clear the previous track's figures immediately so the screen never shows one
-        // track's sample rate against another track's route.
+        diagnosticsJob = null
+        _albumArt.value = null
+        _themeColor.value = android.graphics.Color.parseColor("#121212")
+        _lyrics.value = emptyList()
+        _audioInfo.value = ""
+        _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
 
         val extractor = metadataExtractor ?: return
@@ -487,9 +543,9 @@ class PlayerViewModel : ViewModel() {
             metadataJob = viewModelScope.launch(Dispatchers.IO) {
                 val metadata = extractor.extractMetadata(uri)
                 withContext(Dispatchers.Main) {
-                    // Only settle if this job still describes the displayed track; a newer
-                    // track may have superseded it while the read was in flight.
-                    if (detailsUri == uri) {
+                    // A track can return to the same URI while an older read is still unwinding.
+                    // Match both the URI and request generation before publishing its result.
+                    if (detailsUri == uri && detailsGeneration == requestGeneration) {
                         _albumArt.value = metadata.albumArt
                         _themeColor.value = metadata.themeColor
                         _lyrics.value = metadata.lyrics
@@ -501,7 +557,7 @@ class PlayerViewModel : ViewModel() {
             }
         }
 
-        refreshDiagnostics(uri)
+        refreshDiagnostics(uri, requestGeneration)
     }
 
     /**
@@ -511,7 +567,7 @@ class PlayerViewModel : ViewModel() {
      * `PlaybackDiagnosticsBus` and arrive from the playback service, so a capability refresh
      * can never overwrite a measurement.
      */
-    private fun refreshDiagnostics(uri: Uri) {
+    private fun refreshDiagnostics(uri: Uri, requestGeneration: Long) {
         val probe = directPlaybackProbe
         val monitor = audioRouteMonitor
         val reader = audioSourceReader
@@ -539,6 +595,7 @@ class PlayerViewModel : ViewModel() {
             val capability = probe?.probe(source.sampleRateHz, source.channelCount)
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
             withContext(Dispatchers.Main) {
+                if (detailsUri != uri || detailsGeneration != requestGeneration) return@withContext
                 _diagnostics.value = _diagnostics.value.copy(
                     source = source,
                     route = route,
@@ -556,6 +613,7 @@ class PlayerViewModel : ViewModel() {
      */
     private fun onRouteChanged() {
         val uri = detailsUri ?: return
+        val requestGeneration = detailsGeneration
         val monitor = audioRouteMonitor ?: return
         val probe = directPlaybackProbe
         val source = _diagnostics.value.source
@@ -565,8 +623,8 @@ class PlayerViewModel : ViewModel() {
             val capability = probe?.probe(source.sampleRateHz, source.channelCount)
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
             withContext(Dispatchers.Main) {
-                // Do not resurrect a route for a track the user has already left.
-                if (detailsUri != uri) return@withContext
+                // Do not resurrect a route for a track or request the user has already left.
+                if (detailsUri != uri || detailsGeneration != requestGeneration) return@withContext
                 _diagnostics.value = _diagnostics.value.copy(route = route, capabilities = capability)
             }
         }
