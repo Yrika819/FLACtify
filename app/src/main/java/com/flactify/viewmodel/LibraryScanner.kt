@@ -112,28 +112,37 @@ class LibraryScanner(
                 onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
                 continue
             }
+            val cached = cachedMap[fileUriStr]
             val fileLastMod = try {
                 file.lastModified()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 failedFiles.add(fileName.ifBlank { fileUriStr })
+                cached?.let { newParsedTracks.add(it.copy(originalIndex = index)) }
                 onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
                 continue
             }
             onProgress(LibraryScanProgress(files.size, index, fileName, failedFiles.toList()))
-            val cached = cachedMap[fileUriStr]
 
             // Sniff even cache hits: a renamed container must get the same Media3 MIME hint
             // and audio-quality label as a correctly suffixed file.
             val detectedExt = try {
-                context.contentResolver.openInputStream(file.uri)?.use { AudioContainerDetector.sniff(it) }
+                val stream = context.contentResolver.openInputStream(file.uri)
+                    ?: throw java.io.IOException("Unable to open audio document for format detection")
+                stream.use { AudioContainerDetector.sniff(it) }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                null
+            } catch (e: Exception) {
+                // A provider read failure is not evidence that the file is unsupported. Keep
+                // the last good library entry and make the incomplete scan visible to callers.
+                failedFiles.add(fileName.ifBlank { fileUriStr })
+                cached?.let { newParsedTracks.add(it.copy(originalIndex = index)) }
+                onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
+                continue
             }
             if (detectedExt == null) {
+                // A successful read with an unknown signature is an unsupported/non-audio file.
                 onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
                 continue
             }
@@ -218,6 +227,7 @@ class LibraryScanner(
 
                 if (!sourceCopied) {
                     failedFiles.add(fileName.ifBlank { fileUriStr })
+                    cached?.let { newParsedTracks.add(it.copy(originalIndex = index)) }
                     onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
                     continue
                 }

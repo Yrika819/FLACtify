@@ -15,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
 class LibraryScannerOpusTest {
@@ -80,6 +81,59 @@ class LibraryScannerOpusTest {
             assertEquals("opus", extractor.fileExtensionCache[uriFor("added-without-audio-suffix.bin")])
         } finally {
             extractor.fileExtensionCache.clear()
+            unmockkStatic(DocumentFile::class)
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `temporary format read failure retains cached track while unsupported content is excluded`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val tempDir = kotlin.io.path.createTempDirectory("opus-scan-read-failure").toFile()
+        every { context.contentResolver } returns resolver
+        every { context.cacheDir } returns tempDir
+
+        val folderUri = uriFor("read-failure-music")
+        val root = mockk<DocumentFile>()
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        val unavailable = document("temporarily-unavailable.opus", byteArrayOf(), 200L, resolver)
+        val unsupported = document("renamed-to-audio.flac", "not an audio container".toByteArray(), 200L, resolver)
+        every { resolver.openInputStream(unavailable.uri) } throws IOException("provider temporarily unavailable")
+        every { root.listFiles() } returns arrayOf(unavailable, unsupported)
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+
+        val cachedUnavailable = TrackData(
+            title = "Previously cached song",
+            artist = "Synthetic artist",
+            originalIndex = 0,
+            uri = unavailable.uri,
+            lastModified = 100L
+        )
+        val cachedUnsupported = TrackData(
+            title = "No longer audio",
+            artist = "Synthetic artist",
+            originalIndex = 1,
+            uri = unsupported.uri,
+            lastModified = 100L
+        )
+        var persisted = false
+        try {
+            val result = LibraryScanner(TrackMetadataExtractor(context)).scan(
+                context = context,
+                folderUri = folderUri,
+                cachedTracks = listOf(cachedUnavailable, cachedUnsupported),
+                persistIfCurrent = { persisted = true }
+            )
+
+            assertFalse(result.scanSucceeded)
+            assertEquals(listOf("temporarily-unavailable.opus"), result.failedFiles)
+            assertEquals(listOf("Previously cached song"), result.tracks.map { it.title })
+            assertEquals(unavailable.uri, result.tracks.single().uri)
+            assertFalse(persisted)
+        } finally {
             unmockkStatic(DocumentFile::class)
             tempDir.deleteRecursively()
         }
