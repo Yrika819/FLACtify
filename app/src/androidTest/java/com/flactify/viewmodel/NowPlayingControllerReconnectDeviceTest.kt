@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -59,6 +60,17 @@ class NowPlayingControllerReconnectDeviceTest {
         await("initial Media3 controller") {
             model.nowPlayingUiState.value.session == SessionConnectionState.CONNECTED
         }
+        // CONNECTED only says the MediaController is ready. initController may still be
+        // validating/restoring a saved library and can replace the queue later. Wait for that
+        // startup transaction to finish before installing the synthetic fixture; do not clear
+        // any app data or shorten-circuit a cache restore.
+        await("startup library restore completion") {
+            model.isReady.value && when (model.startupState.value) {
+                StartupState.Ready, is StartupState.Error -> true
+                StartupState.Initializing, is StartupState.Validating,
+                is StartupState.CacheRestored -> false
+            }
+        }
 
         val tone = File(context.cacheDir, "gate3-controller-reconnect.wav")
         toneFile = tone
@@ -77,7 +89,10 @@ class NowPlayingControllerReconnectDeviceTest {
         )
 
         onMain { model.playAllTrack(context, listOf(track), 0) }
-        await("prepared synthetic track with seekable duration") {
+        await(
+            "prepared synthetic track with seekable duration",
+            onTimeout = { syntheticTrackDiagnostics(model, uri) }
+        ) {
             val state = model.nowPlayingUiState.value
             state.current?.identity?.uri == uri &&
                 state.playbackState == PlaybackState.READY &&
@@ -154,13 +169,54 @@ class NowPlayingControllerReconnectDeviceTest {
         assertEquals(stateBeforeStaleCallback, model.nowPlayingUiState.value)
     }
 
-    private fun await(label: String, timeoutMs: Long = 20_000L, condition: () -> Boolean) {
+    private fun await(
+        label: String,
+        timeoutMs: Long = 20_000L,
+        onTimeout: (() -> String)? = null,
+        condition: () -> Boolean
+    ) {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             if (condition()) return
             SystemClock.sleep(50L)
         }
-        throw AssertionError("Timed out waiting for $label")
+        val diagnostic = onTimeout?.invoke()?.let { "; $it" }.orEmpty()
+        throw AssertionError("Timed out waiting for $label$diagnostic")
+    }
+
+    /** Emits only synthetic-fixture booleans/state and Media3 error code, never arbitrary URIs. */
+    private fun syntheticTrackDiagnostics(model: PlayerViewModel, expectedUri: Uri): String {
+        val controller = playbackControllerFor(model)?.player
+        val snapshot = model.nowPlayingUiState.value
+        val mediaItem = controller?.currentMediaItem
+        val media3Uri = mediaItem?.localConfiguration?.uri
+        val snapshotDuration = snapshot.position.durationMs
+        val media3Duration = controller?.duration?.takeUnless { it == C.TIME_UNSET }
+        val startup = when (model.startupState.value) {
+            StartupState.Initializing -> "Initializing"
+            is StartupState.Validating -> "Validating"
+            is StartupState.CacheRestored -> "CacheRestored"
+            StartupState.Ready -> "Ready"
+            is StartupState.Error -> "Error"
+        }
+        val errorCode = controller?.playerError?.errorCode?.toString() ?: "none"
+        return "snapshotPlaybackState=${snapshot.playbackState}, " +
+            "media3PlaybackState=${controller?.playbackState}, " +
+            "isPlaying(snapshot=${snapshot.isPlaying}, media3=${controller?.isPlaying}), " +
+            "duration(snapshot=$snapshotDuration, media3=$media3Duration), " +
+            "seekability(snapshot=${snapshot.position.isSeekable}, " +
+            "media3=${controller?.isCurrentMediaItemSeekable}), " +
+            "targetUriMatches(snapshot=${snapshot.current?.identity?.uri == expectedUri}, " +
+            "media3=${media3Uri == expectedUri}), " +
+            "media3MediaIdMatches=${mediaItem?.mediaId == expectedUri.toString()}, " +
+            "media3MimeType=${mediaItem?.localConfiguration?.mimeType}, " +
+            "startupState=$startup, media3ErrorCode=$errorCode"
+    }
+
+    private fun playbackControllerFor(model: PlayerViewModel): PlaybackController? {
+        val field = PlayerViewModel::class.java.getDeclaredField("playbackController")
+            .apply { isAccessible = true }
+        return field.get(model) as? PlaybackController
     }
 
     private fun writeSyntheticTone(file: File, durationSeconds: Int) {
