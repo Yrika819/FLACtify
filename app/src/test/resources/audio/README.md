@@ -4,13 +4,13 @@ Every audio file in this directory is generated specifically for FLACtify tests
 by [`scripts/generate-test-audio.sh`](../../../../../scripts/generate-test-audio.sh).
 The generator uses FFmpeg lavfi mathematical waveforms (sine functions and
 silence), Python 3 only to keep STREAMINFO while removing optional FLAC metadata,
-and deterministic Base64 encoding for `.b64` outputs. It downloads no audio.
+and Base64 encoding for `.b64` outputs. It downloads no audio.
 The generated signals contain no third-party recordings, speech, music, artwork,
 lyrics, or copied metadata. Redistribution of these newly generated test signals
 is permitted by FLACtify as test material.
 
-Requirements: Bash, Python 3, and FFmpeg with `aevalsrc` and the FLAC encoder.
-Generation was validated with FFmpeg 9.0.1. Reproduce from the repository root:
+Requirements: Bash, Python 3, and FFmpeg with `aevalsrc`, FLAC, AAC, Opus, and MP3
+encoders. Generation was validated with FFmpeg 9.0.1. Reproduce from the repository root:
 
 ```sh
 scripts/generate-test-audio.sh
@@ -33,3 +33,10 @@ newline in Base64 files.
 
 The two `.b64` files contain only Base64 text representing the generated FLAC
 streams. No test expectations were weakened to accommodate replacement audio.
+
+The scanner format-detection regression set adds short synthetic AAC/M4A, MP3, WAV,
+tagged and untagged Opus files, plus byte-identical Opus streams named `.ogg` and
+`.m4a` to verify content-based detection. The tagged Opus file has generated timed
+lyrics and a tiny geometric PNG cover encoded in its OpusTags packet. `corrupt.opus`
+is a short non-audio byte sequence used to verify invalid files are ignored. These
+files contain no third-party recordings or artwork.

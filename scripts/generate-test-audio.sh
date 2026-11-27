@@ -18,6 +18,14 @@ encode() {
         -c:a flac -compression_level 8 -bits_per_raw_sample "$bits" "$OUT/$target"
 }
 
+encode_compressed_fixture() {
+    local frequency="$1" codec="$2" bitrate="$3" target="$4" extension="$5"
+    ffmpeg -hide_banner -loglevel error -nostdin -y \
+        -f lavfi -i "sine=frequency=${frequency}:duration=0.25" \
+        -map_metadata -1 -map_chapters -1 -fflags +bitexact -flags:a +bitexact \
+        -c:a "$codec" -b:a "$bitrate" "$OUT/$target.$extension"
+}
+
 # Small fixtures preserve the historical sample counts and coded formats.
 encode '0.25*sin(2*PI*440*t)|0.20*sin(2*PI*660*t)' 44100 0.03 stereo 16 flac_44100_16_stereo.flac
 encode '0.20*sin(2*PI*440*t)|0.20*sin(2*PI*660*t)' 96000 0.02 stereo 24 flac_96000_24_stereo.flac
@@ -65,3 +73,41 @@ if streaminfo is None or len(streaminfo) != 38:
 streaminfo[0] |= 0x80  # STREAMINFO is the final and only metadata block.
 destination.write_bytes(b"fLaC" + streaminfo + data[pos:])
 PY
+
+# Short compressed fixtures exercise audio sniffing and scanner metadata fallback.
+picture_block="$(python3 - <<'PY'
+import base64
+import struct
+import zlib
+
+def chunk(kind, payload):
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff)
+
+png = b"\x89PNG\r\n\x1a\n"
+png += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(b"\x00\xff\x20\x20\xff\x00\xff\x20\x20\xff"))
+png += chunk(b"IEND", b"")
+picture = struct.pack(">I", 3)
+picture += struct.pack(">I", len(b"image/png")) + b"image/png"
+picture += struct.pack(">I", 0)  # description
+picture += struct.pack(">IIIII", 2, 2, 24, 0, len(png)) + png
+print(base64.b64encode(picture).decode("ascii"))
+PY
+)"
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+    -f lavfi -i 'sine=frequency=440:duration=0.4' \
+    -map_metadata -1 -metadata title='Synthetic Opus' -metadata artist='FLACtify Test' \
+    -metadata album='Synthetic Regression' -metadata track='1' \
+    -metadata lyrics='[00:00.00]Synthetic Opus lyric' \
+    -metadata "METADATA_BLOCK_PICTURE=$picture_block" \
+    -c:a libopus -b:a 64k "$OUT/opus_tagged.opus"
+unset picture_block
+encode_compressed_fixture 523 libopus 48k opus_untagged opus
+cp "$OUT/opus_untagged.opus" "$OUT/opus_as_ogg.ogg"
+cp "$OUT/opus_untagged.opus" "$OUT/opus_as_m4a.m4a"
+encode_compressed_fixture 660 aac 64k aac m4a
+encode_compressed_fixture 784 libmp3lame 64k synthetic mp3
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+    -f lavfi -i 'sine=frequency=880:duration=0.25' -map_metadata -1 \
+    -c:a pcm_s16le "$OUT/synthetic.wav"
+printf 'broken audio fixture' > "$OUT/corrupt.opus"

@@ -157,6 +157,8 @@ class TrackMetadataExtractor(private val context: Context) {
                 "flac" -> "FLAC"
                 "wav" -> "WAV"
                 "m4a" -> "ALAC/AAC"
+                "opus" -> "OPUS"
+                "ogg" -> "OGG"
                 else -> "MP3"
             }
 
@@ -167,7 +169,7 @@ class TrackMetadataExtractor(private val context: Context) {
             lyricsCache[uri] = parsedLyrics
 
             val ratePart = sampleRate?.let { "${it / 1000.0}kHz" }
-            val depthPart = bitDepth?.takeIf { it.isNotEmpty() && formatName != "MP3" }
+            val depthPart = bitDepth?.takeIf { it.isNotEmpty() && formatName !in setOf("MP3", "OPUS", "OGG") }
             val audioInfo = listOfNotNull(formatName, ratePart, depthPart).joinToString(" | ")
 
             val routeLabel = getOutputRouteLabel()
@@ -204,6 +206,17 @@ class TrackMetadataExtractor(private val context: Context) {
                 if (!rawLyrics.isNullOrEmpty()) {
                     parsedLyrics = parseLyrics(rawLyrics)
                     lyricsLoaded = true
+                }
+            }
+        }
+
+        if (ext == "opus") {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val tags = OpusTags.read(inputStream)
+                val rawLyrics = tags["LYRICS"] ?: tags["UNSYNCEDLYRICS"] ?: tags["UNSYNCHRONISEDLYRICS"]
+                if (!rawLyrics.isNullOrBlank()) {
+                    parsedLyrics = parseLyrics(rawLyrics)
+                    lyricsLoaded = parsedLyrics.isNotEmpty()
                 }
             }
         }
@@ -246,10 +259,16 @@ class TrackMetadataExtractor(private val context: Context) {
             fileExtensionCache[uri] = detectedExt
             detectedExt
         }
-        val formatName =
-            if (ext == "flac") "FLAC" else if (ext == "wav") "WAV" else if (ext == "m4a") "ALAC/AAC" else "MP3"
+        val formatName = when (ext) {
+            "flac" -> "FLAC"
+            "wav" -> "WAV"
+            "m4a" -> "ALAC/AAC"
+            "opus" -> "OPUS"
+            "ogg" -> "OGG"
+            else -> "MP3"
+        }
         val ratePart = spec.sampleRateHz?.let { "${it / 1000.0}kHz" }
-        val depthPart = spec.bitDepthLabel?.takeIf { it.isNotEmpty() && formatName != "MP3" }
+        val depthPart = spec.bitDepthLabel?.takeIf { it.isNotEmpty() && formatName !in setOf("MP3", "OPUS", "OGG") }
         val audioInfo = listOfNotNull(formatName, ratePart, depthPart).joinToString(" | ")
 
         return TrackMetadata(
@@ -287,12 +306,14 @@ class TrackMetadataExtractor(private val context: Context) {
         val name = DocumentFile.fromSingleUri(context, uri)?.name?.lowercase()
             ?: uri.lastPathSegment?.lowercase()
             ?: ""
-        return when {
-            name.endsWith(".flac") -> "flac"
-            name.endsWith(".wav") -> "wav"
-            name.endsWith(".m4a") -> "m4a"
-            else -> "mp3"
+        val sniffed = try {
+            context.contentResolver.openInputStream(uri)?.use { AudioContainerDetector.sniff(it) }
+        } catch (_: Exception) {
+            null
         }
+        return sniffed ?: name.substringAfterLast('.', "")
+            .takeIf { it in setOf("flac", "wav", "m4a", "mp3", "ogg", "opus") }
+            ?: "mp3"
     }
 
     /**

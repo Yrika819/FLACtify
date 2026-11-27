@@ -71,7 +71,7 @@ class LibraryScanner(
             return@withContext LibraryScanResult(emptyList(), emptyList(), false, scanSucceeded = false, failure = e)
         }
         val files = try {
-            collectAudioFiles(root)
+            collectCandidateFiles(root)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -124,6 +124,21 @@ class LibraryScanner(
             onProgress(LibraryScanProgress(files.size, index, fileName, failedFiles.toList()))
             val cached = cachedMap[fileUriStr]
 
+            // Sniff even cache hits: a renamed container must get the same Media3 MIME hint
+            // and audio-quality label as a correctly suffixed file.
+            val detectedExt = try {
+                context.contentResolver.openInputStream(file.uri)?.use { AudioContainerDetector.sniff(it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (detectedExt == null) {
+                onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
+                continue
+            }
+            metadataExtractor?.fileExtensionCache?.set(file.uri, detectedExt)
+
             if (cached != null && isTimestampFresh(cached.lastModified, fileLastMod)) {
                 newParsedTracks.add(cached.copy(originalIndex = index))
                 continue
@@ -144,7 +159,7 @@ class LibraryScanner(
                 var comment: String? = null
                 var artBytes: ByteArray? = null
 
-                val fileExt = fileName.substringAfterLast(".", "flac").lowercase().ifBlank { "flac" }
+                val fileExt = detectedExt
                 metadataExtractor?.fileExtensionCache?.set(file.uri, fileExt)
 
                 var tempFile: File? = null
@@ -159,20 +174,39 @@ class LibraryScanner(
                     }
                     sourceCopied = true
 
-                    val audioFile = AudioFileIO.read(scanFile)
-                    val tag = audioFile.tag
-                    if (tag != null) {
-                        tag.getFirst(FieldKey.TITLE).takeIf { it.isNotBlank() }?.let { titleName = it.trim() }
-                        tag.getFirst(FieldKey.ARTIST).takeIf { it.isNotBlank() }?.let { artistName = it.trim() }
-                        tag.getFirst(FieldKey.ALBUM).takeIf { it.isNotBlank() }?.let { albumName = it.trim() }
-                        tag.getFirst(FieldKey.TRACK).takeIf { it.isNotBlank() }?.let { trackNum = it.trim() }
-                        tag.getFirst(FieldKey.GENRE).takeIf { it.isNotBlank() }?.let { genre = it.trim() }
-                        tag.getFirst(FieldKey.YEAR).takeIf { it.isNotBlank() }?.let { year = it.trim() }
-                        tag.getFirst(FieldKey.COMPOSER).takeIf { it.isNotBlank() }?.let { composer = it.trim() }
-                        tag.getFirst(FieldKey.ALBUM_ARTIST).takeIf { it.isNotBlank() }?.let { albumArtist = it.trim() }
-                        tag.getFirst(FieldKey.DISC_NO).takeIf { it.isNotBlank() }?.let { discNumber = it.trim() }
-                        tag.getFirst(FieldKey.COMMENT).takeIf { it.isNotBlank() }?.let { comment = it.trim() }
-                        tag.firstArtwork?.let { artBytes = compactArtworkBytes(it.binaryData) }
+                    try {
+                        val tag = AudioFileIO.read(scanFile).tag
+                        if (tag != null) {
+                            tag.getFirst(FieldKey.TITLE).takeIf { it.isNotBlank() }?.let { titleName = it.trim() }
+                            tag.getFirst(FieldKey.ARTIST).takeIf { it.isNotBlank() }?.let { artistName = it.trim() }
+                            tag.getFirst(FieldKey.ALBUM).takeIf { it.isNotBlank() }?.let { albumName = it.trim() }
+                            tag.getFirst(FieldKey.TRACK).takeIf { it.isNotBlank() }?.let { trackNum = it.trim() }
+                            tag.getFirst(FieldKey.GENRE).takeIf { it.isNotBlank() }?.let { genre = it.trim() }
+                            tag.getFirst(FieldKey.YEAR).takeIf { it.isNotBlank() }?.let { year = it.trim() }
+                            tag.getFirst(FieldKey.COMPOSER).takeIf { it.isNotBlank() }?.let { composer = it.trim() }
+                            tag.getFirst(FieldKey.ALBUM_ARTIST).takeIf { it.isNotBlank() }?.let { albumArtist = it.trim() }
+                            tag.getFirst(FieldKey.DISC_NO).takeIf { it.isNotBlank() }?.let { discNumber = it.trim() }
+                            tag.getFirst(FieldKey.COMMENT).takeIf { it.isNotBlank() }?.let { comment = it.trim() }
+                            tag.firstArtwork?.let { artBytes = compactArtworkBytes(it.binaryData) }
+                        }
+                    } catch (e: Exception) {
+                        // Opus tags are read below because jaudiotagger 3.0.1 has no Opus reader.
+                        Log.d("FLACtify", "Primary tag reader did not recognize container")
+                    }
+                    if (fileExt == "opus") {
+                        OpusTags.read(scanFile)?.let { tags ->
+                            tags["TITLE"]?.takeIf { it.isNotBlank() }?.let { titleName = it }
+                            tags["ARTIST"]?.takeIf { it.isNotBlank() }?.let { artistName = it }
+                            tags["ALBUM"]?.takeIf { it.isNotBlank() }?.let { albumName = it }
+                            tags["TRACKNUMBER"]?.takeIf { it.isNotBlank() }?.let { trackNum = it }
+                            tags["GENRE"]?.takeIf { it.isNotBlank() }?.let { genre = it }
+                            tags["DATE"]?.takeIf { it.isNotBlank() }?.let { year = it }
+                            tags["COMPOSER"]?.takeIf { it.isNotBlank() }?.let { composer = it }
+                            tags["ALBUMARTIST"]?.takeIf { it.isNotBlank() }?.let { albumArtist = it }
+                            tags["DISCNUMBER"]?.takeIf { it.isNotBlank() }?.let { discNumber = it }
+                            tags["COMMENT"]?.takeIf { it.isNotBlank() }?.let { comment = it }
+                            tags["METADATA_BLOCK_PICTURE"]?.let(OpusTags::decodePicture)?.let(::compactArtworkBytes)?.let { artBytes = it }
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -415,10 +449,19 @@ class LibraryScanner(
                 result.addAll(collectAudioFiles(file))
             } else {
                 val name = file.name?.lowercase() ?: ""
-                if (name.endsWith(".mp3") || name.endsWith(".flac") || name.endsWith(".m4a") || name.endsWith(".wav")) {
+                if (listOf(".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus").any(name::endsWith)) {
                     result.add(file)
                 }
             }
+        }
+        return result.sortedBy { it.name }
+    }
+
+    private fun collectCandidateFiles(dir: DocumentFile): List<DocumentFile> {
+        val result = mutableListOf<DocumentFile>()
+        dir.listFiles().forEach { file ->
+            if (file.isDirectory) result.addAll(collectCandidateFiles(file))
+            else result.add(file)
         }
         return result.sortedBy { it.name }
     }

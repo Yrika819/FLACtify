@@ -1875,6 +1875,9 @@ class PlayerViewModel : ViewModel() {
         "flac" -> "audio/flac"
         "wav" -> "audio/wav"
         "m4a" -> "audio/mp4"
+        // Media3's Ogg extractor is selected with the Ogg container MIME. Opus is
+        // identified from the stream headers, including files with misleading suffixes.
+        "ogg", "opus" -> "application/ogg"
         "mp3" -> "audio/mpeg"
         else -> "audio/mpeg"
     }
