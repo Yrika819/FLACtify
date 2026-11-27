@@ -190,7 +190,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // Keep production signing as the default; allow an explicitly unsigned
+            // production-ID candidate build without bringing a keystore into Cloud.
+            signingConfig = if (providers.gradleProperty("flactifyUnsignedRelease").getOrElse("false").toBoolean()) {
+                null
+            } else {
+                signingConfigs.getByName("release")
+            }
         }
         create("releaseValidation") {
             initWith(getByName("release"))
