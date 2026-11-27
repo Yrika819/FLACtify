@@ -30,15 +30,19 @@ Out of scope:
 | Item | Requirement |
 | --- | --- |
 | OS | Linux, x86_64 or aarch64. Ubuntu 22.04/24.04 LTS is the expected image. |
-| CPU/RAM | 4+ cores and 8 GB RAM recommended for lint/R8. Not yet measured in Codex Cloud. |
-| Disk | 20 GB free recommended for SDK, JDKs, Gradle caches, and build outputs. |
+| CPU/RAM/disk | Workload guidance only; see the resource policy below. Host-reported values are not an allocation guarantee. |
 | Shell | Bash 4+ and standard coreutils. |
 | Python | `python3` for the 16 KiB verification script. |
 | Git | Required; the setup script verifies the canonical repository role. |
 
-These are engineering requirements, not verified cloud measurements. The first setup
-can take 10-20 minutes on a fast network because the JDKs, NDK, CMake, and Steam Audio
-archive are large. Codex Cloud setup-script time limits have not been tested.
+These are engineering recommendations, not a Codex Cloud resource specification. OpenAI's
+Plus plan documentation describes Codex usage allowances and credits, but does not promise
+a fixed number of CPU cores, RAM, or disk capacity for a cloud task. The standard cloud
+environment has no separate VM charge; model use counts toward the plan's Codex allowance.
+Check the account usage page and any displayed limits before scheduling expensive work.
+Do not treat `nproc`, `free`, or `df` output as guaranteed capacity or use it to justify
+parallel build settings. The initial setup can take 10-20 minutes on a fast network; setup
+script time limits have not been measured here.
 
 ## Toolchain matrix
 
@@ -167,8 +171,30 @@ Do not commit the SDK archive, generated `jniLibs`, HRTF binary, or extracted he
 | Steam Audio setup cache | `$XDG_CACHE_HOME/flactify` or `$HOME/.cache/flactify` | Verified SDK/license/SOFA copies. |
 | Build outputs | `app/build` | Disposable; `clean` removes staged Steam Audio. |
 
-Keep `$GRADLE_USER_HOME` and the Android SDK across tasks when the Codex Cloud environment
-supports caching. Do not cache signing material or `local.properties` from another machine.
+### Read-only HOME and reusable tasks
+
+Codex Cloud gives each task an isolated working directory. A published environment supplies
+its configured variables and setup to new tasks; it does not carry another task's uncommitted
+workspace changes. OpenAI documents saved VM state as recoverable for up to 7 days after the
+last task resume, so cache persistence beyond that window is not guaranteed.
+
+The published FLACtify environment explicitly places all writable state outside HOME:
+`FLACTIFY_TOOLCHAIN_ROOT`, `ANDROID_HOME`/`ANDROID_SDK_ROOT`, `GRADLE_USER_HOME`,
+`ANDROID_USER_HOME`, and `FLACTIFY_CACHE_ROOT` point into `/workspace`. Keep these bindings
+in the published environment. The setup script uses `FLACTIFY_CACHE_ROOT` and
+`FLACTIFY_TOOLCHAIN_ROOT` when present and writes its environment file under the toolchain
+root, so it does not need to write under HOME. If these variables are absent, its fallback
+cache and toolchain locations use HOME and may fail on a read-only HOME.
+
+The Android SDK must be writable when setup needs to install packages or accept licenses.
+This environment points it to a writable `/workspace` path. A read-only SDK is suitable
+only for builds that need no SDK mutation; `--check` is verify-only. Do not copy the SDK or
+reinstall packages when the configured SDK already contains the required versions.
+
+Before setup on a new task, confirm that the published paths resolve and are writable with
+`test -w` (without attempting a write probe), then run `--check`. Keep Gradle, Android, and
+Steam Audio caches at their configured paths when those paths are retained by the task
+environment. Do not cache signing material or another machine's `local.properties`.
 
 ## Network access
 
@@ -260,22 +286,29 @@ The following remain device-only and must not be reported as cloud PASS:
 Some instrumentation tests may compile in the cloud but cannot run there. Compilation is not
 execution.
 
-## First cloud validation
+## Cloud validation record
 
-Run from a fresh checkout of the migration or later `main` revision:
+Initial Codex Cloud validation was completed on 2026-11-27 from PR #20 head
+`1ebf805ea333dece5b41e561e3d267e2c60e4773` (`infra/codex-cloud-readiness`). The task loaded
+the published environment configuration. Results:
 
-```sh
-./scripts/setup-codex-cloud.sh
-# Source the environment file path printed by the script.
-./scripts/setup-codex-cloud.sh --check
-./gradlew --version
-./gradlew testDebugUnitTest
-./gradlew lint
-./gradlew assembleDebug
-```
+- `setup-codex-cloud.sh --check`: PASS; verified JDK 11/17/21, Android SDK packages,
+  Gradle wrapper 9.4.1 and staged Steam Audio 4.8.1 without installing or downloading.
+- `gradlew --version`: PASS; Gradle 9.4.1, launcher JDK 17.0.21.1, daemon requirement JDK 21.
+- Published path configuration: all seven required variables reported ready. HOME was
+  read-only; toolchain, SDK, Gradle, Android user, and Steam Audio cache roots resolved under
+  `/workspace` and were writable. Required SDK package directories and staged Steam Audio
+  files were present; the Gradle user home occupied 1.6 GiB.
+- The environment reported 3 CPUs, 9.7 GiB RAM, and 60 GiB free disk. These are observations
+  only and are not interpreted as Plus plan allocation or build capacity guarantees.
+- The 366 unit tests already accepted for this phase were not rerun. No APK/AAB was built
+  or published.
 
-Only after those pass, run the broader sequence above. Record the exact commit, script
-output, command, and result. A missing device run stays UNVERIFIED.
+The published environment configuration was loaded successfully for this newly provisioned
+task, which verifies setup reuse from the published configuration. This does not establish
+that VM caches persist indefinitely; OpenAI's documented task isolation and VM recovery
+window above apply. The full Android CI is not rerun in this task; use the PR's GitHub Actions
+checks for Android and CodeQL status. A missing device run stays UNVERIFIED.
 
 ## Troubleshooting
 
@@ -303,14 +336,8 @@ output, command, and result. A missing device run stays UNVERIFIED.
 
 ## Known limitations
 
-At the time of this document:
-
-- the setup script has not been executed on Linux or in Codex Cloud;
-- the Codex Cloud environment has not been created;
-- the restricted network allowlist has not been tested;
-- cloud Gradle, lint, R8, and 16 KiB runs have not been performed;
-- cache reuse across Codex Cloud tasks is unverified;
-- all device-only scenarios remain UNVERIFIED.
-
-Treat these as open items until a cloud task produces evidence. Do not convert them to PASS
-from local Mac results.
+At the time of this document, only the verify-only setup check and Gradle version command
+have been run in Codex Cloud. Cloud unit tests, lint, R8, and 16 KiB build validation were
+not rerun in this task; see the GitHub Actions checks on PR #20 for CI evidence. The active
+task loaded the published setup successfully, but cache persistence past the documented VM
+recovery window is not guaranteed. All device-only scenarios remain UNVERIFIED.
