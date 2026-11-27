@@ -29,3 +29,16 @@ git status --short
 If the repository role and remote disagree: STOP WITHOUT EDITING.
 
 Run `scripts/verify-repo-role.sh` before repository mutations and pushes. A failing check means this is not the canonical public-development checkout; do not proceed.
+
+## Development documentation
+
+Before planning or implementing product work, read:
+
+- [`docs/development/PROJECT_STATUS.md`](docs/development/PROJECT_STATUS.md) for the current baseline and gates;
+- [`docs/development/OWNER_DECISIONS.md`](docs/development/OWNER_DECISIONS.md) for binding decisions;
+- [`docs/development/NOWPLAYING_CONTRACT.md`](docs/development/NOWPLAYING_CONTRACT.md) before touching playback state;
+- [`docs/development/MINIPLAYER_SPEC.md`](docs/development/MINIPLAYER_SPEC.md) before any mini-player work;
+- [`docs/development/CLOUD_DEVELOPMENT.md`](docs/development/CLOUD_DEVELOPMENT.md) before using Codex Cloud.
+
+Cloud setup uses `scripts/setup-codex-cloud.sh`. Cloud results do not replace device-only
+validation, and Phase 6B product implementation requires an explicit Owner go-ahead.
