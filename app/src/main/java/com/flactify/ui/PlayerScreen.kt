@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.flactify.audio.PcmEncoding
 import com.flactify.audio.PlaybackDiagnostics
 import com.flactify.viewmodel.PlayerViewModel
@@ -49,7 +50,10 @@ fun PlayerScreen(
     val currentTrackName = nowPlaying.current?.title?.takeIf { it.isNotBlank() }
         ?: if (nowPlaying.current == null) "未再生" else "不明"
     val currentArtist = nowPlaying.current?.artist?.takeIf { it.isNotBlank() } ?: "不明なアーティスト"
-    val albumArt = (nowPlaying.current?.artwork as? ArtworkState.Available)?.bitmap
+    val artwork = nowPlaying.current?.artwork as? ArtworkState.Available
+    val cachedAlbumArt by viewModel.albumArt.collectAsState()
+    val albumArt = cachedAlbumArt.takeIf { artwork?.source == ArtworkState.Available.Source.TRACK_CACHE }
+    val artworkUri = artwork?.artworkUri?.takeIf { artwork?.source == ArtworkState.Available.Source.MEDIA3 }
     val lyrics by viewModel.lyrics.collectAsState()
     val isShuffleMode = nowPlaying.shuffleEnabled
     val repeatMode = nowPlaying.repeatMode
@@ -82,7 +86,8 @@ fun PlayerScreen(
                 )
             }
     ) {
-        if (albumArt != null) {
+        if (albumArt != null || artworkUri != null) {
+            if (albumArt != null) {
             Image(
                 bitmap = albumArt!!.asImageBitmap(),
                 contentDescription = null,
@@ -91,6 +96,14 @@ fun PlayerScreen(
                     .blur(40.dp),
                 contentScale = ContentScale.Crop
             )
+            } else {
+                AsyncImage(
+                    model = artworkUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().blur(40.dp),
+                    contentScale = ContentScale.Crop
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -192,14 +205,19 @@ fun PlayerScreen(
                                 Text("フォルダを選択", color = Color.White)
                             }
                         }
-                    } else if (albumArt != null) {
+                    } else if (albumArt != null || artworkUri != null) {
                         Card(
                             modifier = Modifier.size(artworkSize),
                             shape = RoundedCornerShape(12.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
                         ) {
-                            Image(
+                            if (albumArt != null) Image(
                                 bitmap = albumArt!!.asImageBitmap(),
+                                contentDescription = "アルバムアート",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            ) else AsyncImage(
+                                model = artworkUri,
                                 contentDescription = "アルバムアート",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop

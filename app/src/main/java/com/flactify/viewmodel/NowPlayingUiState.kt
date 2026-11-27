@@ -1,7 +1,6 @@
 package com.flactify.viewmodel
 
 import android.net.Uri
-import android.graphics.Bitmap
 import androidx.media3.common.Player
 
 /** Immutable, Media3-backed state shared by the full player and future mini player. */
@@ -41,8 +40,14 @@ enum class PlaybackState { IDLE, BUFFERING, READY, ENDED, ERROR }
 sealed interface ArtworkState {
     data object Loading : ArtworkState
 
-    /** A null URI represents artwork extracted from the track itself and held by the legacy image pipeline. */
-    data class Available(val artworkUri: Uri?, val version: Long, val bitmap: Bitmap? = null) : ArtworkState
+    /** URI-only reference. TRACK_CACHE points at the source track URI used by the bounded extractor cache. */
+    data class Available(
+        val artworkUri: Uri,
+        val version: Long,
+        val source: Source = Source.MEDIA3
+    ) : ArtworkState {
+        enum class Source { MEDIA3, TRACK_CACHE }
+    }
 
     data object Unavailable : ArtworkState
 }

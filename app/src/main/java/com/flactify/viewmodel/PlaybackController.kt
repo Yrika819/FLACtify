@@ -41,8 +41,8 @@ class PlaybackController(
     /** The queue vanished or the player became idle; the current item no longer owns its time. */
     private val onPlaybackIdle: () -> Unit = {},
     /** Full Media3 item snapshot used by the shared now-playing state. */
-    private val onCurrentMediaItemChanged: (MediaItem?, Boolean) -> Unit = { _, _ -> },
-    private val onPlaybackStateChanged: (Int) -> Unit = {},
+    private val onCurrentMediaItemChanged: (MediaItem?, Boolean, MediaMetadata?) -> Unit = { _, _, _ -> },
+    private val onPlaybackStateChanged: (Int, Boolean) -> Unit = { _, _ -> },
     private val onPlaybackError: () -> Unit = {},
     private val onSeekabilityChanged: (Boolean) -> Unit = {},
     private val onSessionConnectionChanged: (SessionConnectionState, Long) -> Unit = { _, _ -> },
@@ -113,8 +113,10 @@ class PlaybackController(
                 mediaController.addListener(controllerListener)
                 controllerGeneration++
                 reconnecting = false
-                onSessionConnectionChanged(SessionConnectionState.CONNECTED, controllerGeneration)
+                // syncState publishes one authoritative snapshot with CONNECTED atomically. The
+                // ready callback performs the same sync on first connection before publishing it.
                 if (wasReconnect) syncState() else readyCallback?.invoke(mediaController)
+                onSessionConnectionChanged(SessionConnectionState.CONNECTED, controllerGeneration)
             } catch (_: Exception) {
                 controllerFuture = null
                 if (!cleanedUp && reconnecting) {
@@ -153,19 +155,22 @@ class PlaybackController(
             override fun onMediaMetadataChanged(metadata: MediaMetadata) {
                 if (player !== mediaController) return
                 onMetadataChanged(metadata, currentUri())
-                onCurrentMediaItemChanged(mediaController.currentMediaItem, false)
+                onCurrentMediaItemChanged(mediaController.currentMediaItem, false, metadata)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (player !== mediaController) return
-                onCurrentMediaItemChanged(mediaItem, true)
+                onCurrentMediaItemChanged(mediaItem, true, mediaController.mediaMetadata)
                 handleMediaItemTransition(mediaItem)
                 publishPositionAndDuration(mediaController)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (player !== mediaController) return
-                this@PlaybackController.onPlaybackStateChanged.invoke(playbackState)
+                this@PlaybackController.onPlaybackStateChanged.invoke(
+                    playbackState,
+                    mediaController.playerError != null
+                )
                 // A prepared (READY) or finished (ENDED) item has an authoritative duration even
                 // while playback is paused, so the UI must not wait for the 250 ms playing loop.
                 when (playbackState) {
@@ -173,7 +178,7 @@ class PlaybackController(
                     // IDLE means the item was stopped or removed; keep no duration for it.
                     Player.STATE_IDLE -> {
                         if (mediaController.currentMediaItem == null) {
-                            onCurrentMediaItemChanged(null, false)
+                            onCurrentMediaItemChanged(null, false, mediaController.mediaMetadata)
                         }
                         onPlaybackIdle()
                     }
@@ -213,14 +218,14 @@ class PlaybackController(
         player?.let { mediaController ->
             onAuthoritativeSnapshot(mediaController, controllerGeneration)
             onPlayingChanged(mediaController.isPlaying)
-            onPlaybackStateChanged(mediaController.playbackState)
+            onPlaybackStateChanged(mediaController.playbackState, mediaController.playerError != null)
             onSeekabilityChanged(mediaController.isCurrentMediaItemSeekable)
             if (mediaController.currentMediaItem == null) {
-                onCurrentMediaItemChanged(null, false)
+                onCurrentMediaItemChanged(null, false, mediaController.mediaMetadata)
                 onPlaybackIdle()
                 onIdle()
             } else {
-                onCurrentMediaItemChanged(mediaController.currentMediaItem, false)
+                onCurrentMediaItemChanged(mediaController.currentMediaItem, false, mediaController.mediaMetadata)
                 onMetadataChanged(mediaController.mediaMetadata, currentUri())
             }
             publishPositionAndDuration(mediaController)

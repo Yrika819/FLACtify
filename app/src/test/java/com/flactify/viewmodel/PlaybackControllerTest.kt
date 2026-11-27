@@ -20,6 +20,51 @@ import org.junit.Test
 
 class PlaybackControllerTest {
     @Test
+    fun `callbacks from replaced controller are ignored`() {
+        val oldController = mockk<MediaController>(relaxed = true)
+        val activeController = mockk<MediaController>(relaxed = true)
+        val shuffleUpdates = mutableListOf<Boolean>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = shuffleUpdates::add,
+            onRepeatChanged = {},
+            onProgress = { _, _ -> }
+        )
+        setPlayer(controller, oldController)
+        val staleListener = controller.createControllerListener(oldController)
+        setPlayer(controller, activeController)
+
+        staleListener.onShuffleModeEnabledChanged(true)
+
+        assertTrue(shuffleUpdates.isEmpty())
+    }
+
+    @Test
+    fun `idle callback retains error state while Media3 reports player error`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.playerError } returns mockk(relaxed = true)
+        val playbackUpdates = mutableListOf<Pair<Int, Boolean>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { _, _ -> },
+            onPlaybackStateChanged = { state, hasError -> playbackUpdates += state to hasError }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onPlaybackStateChanged(Player.STATE_IDLE)
+
+        assertEquals(listOf(Player.STATE_IDLE to true), playbackUpdates)
+    }
+
+    @Test
     fun `playTracks builds media items and starts playback`() {
         val player = mockk<MediaController>(relaxed = true)
         every { player.currentMediaItem } returns null

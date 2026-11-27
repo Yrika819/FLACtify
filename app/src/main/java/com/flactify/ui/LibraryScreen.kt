@@ -148,7 +148,14 @@ fun LibraryScreen(
     val lastRecommendationUpdate by viewModel.lastRecommendationUpdate.collectAsState()
 
     val nowPlaying by viewModel.nowPlayingContentState.collectAsState(initial = NowPlayingUiState())
-    val currentAlbumArt = (nowPlaying.current?.artwork as? ArtworkState.Available)?.bitmap
+    val nowPlayingArtwork = nowPlaying.current?.artwork as? ArtworkState.Available
+    val cachedNowPlayingArt by viewModel.albumArt.collectAsState()
+    val currentAlbumArt = cachedNowPlayingArt.takeIf {
+        nowPlayingArtwork?.source == ArtworkState.Available.Source.TRACK_CACHE
+    }
+    val nowPlayingArtworkUri = nowPlayingArtwork?.artworkUri?.takeIf {
+        nowPlayingArtwork?.source == ArtworkState.Available.Source.MEDIA3
+    }
     val isShuffleMode = nowPlaying.shuffleEnabled
     val repeatMode = nowPlaying.repeatMode
 
@@ -232,11 +239,21 @@ fun LibraryScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (currentAlbumArt != null) {
+        if (currentAlbumArt != null || nowPlayingArtworkUri != null) {
+            if (currentAlbumArt != null) {
             Image(
                 bitmap = currentAlbumArt!!.asImageBitmap(), contentDescription = null,
                 modifier = Modifier.fillMaxSize().blur(50.dp), contentScale = ContentScale.Crop, alpha = 0.6f
             )
+            } else {
+                AsyncImage(
+                    model = nowPlayingArtworkUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().blur(50.dp),
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.6f
+                )
+            }
             Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color(0x77121212), Color(0x99121212), Color(0xDD121212)))))
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color(0xFF121212)))
