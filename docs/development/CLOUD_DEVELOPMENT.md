@@ -125,7 +125,7 @@ Useful options:
 | `--skip-jdk` | Use the existing `JAVA_HOME`; the caller must provide compatible JDKs. |
 | `--skip-sdk` | Do not install or verify Android SDK packages. |
 | `--skip-steam-audio` | Do not stage Steam Audio inputs. |
-| `--warm-gradle` | Run the wrapper version check and `./gradlew help` after setup. |
+| `--warm-gradle` | Run the wrapper version check and `./gradlew help` after setup. Cannot be combined with `--check` or `--offline`. |
 
 After setup, either source the generated environment file in the current shell or configure
 the equivalent values in the Codex Cloud environment. The file sets `JAVA_HOME`, `PATH`,

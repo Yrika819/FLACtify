@@ -506,6 +506,9 @@ warm_gradle_cache() {
   if [[ "$check_only" == true ]]; then
     fail "--warm-gradle cannot be combined with --check."
   fi
+  if [[ "$offline" == true ]]; then
+    fail "--warm-gradle cannot be combined with --offline."
+  fi
   info "Warming the Gradle wrapper and plugin resolution"
   (
     cd "$REPO_ROOT"
