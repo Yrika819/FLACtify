@@ -101,7 +101,14 @@ fun PlayerScreen(
                     model = artworkUri,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize().blur(40.dp),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    onError = {
+                        viewModel.setArtworkState(
+                            nowPlaying.current?.identity,
+                            nowPlaying.transitionGeneration,
+                            ArtworkState.Unavailable
+                        )
+                    }
                 )
             }
             Box(
@@ -220,7 +227,14 @@ fun PlayerScreen(
                                 model = artworkUri,
                                 contentDescription = "アルバムアート",
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                                contentScale = ContentScale.Crop,
+                                onError = {
+                                    viewModel.setArtworkState(
+                                        nowPlaying.current?.identity,
+                                        nowPlaying.transitionGeneration,
+                                        ArtworkState.Unavailable
+                                    )
+                                }
                             )
                         }
                     } else {

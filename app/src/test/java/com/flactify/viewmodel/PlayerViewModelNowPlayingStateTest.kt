@@ -271,6 +271,12 @@ class PlayerViewModelNowPlayingStateTest {
             val artwork = viewModel.nowPlayingUiState.value.current?.artwork as ArtworkState.Available
             assertSame(artUri, artwork.artworkUri)
             assertEquals(ArtworkState.Available.Source.MEDIA3, artwork.source)
+            viewModel.setArtworkState(
+                track.identity,
+                viewModel.nowPlayingUiState.value.transitionGeneration,
+                ArtworkState.Unavailable
+            )
+            assertEquals(ArtworkState.Unavailable, viewModel.nowPlayingUiState.value.current?.artwork)
         } finally {
             viewModel.cleanup()
         }
