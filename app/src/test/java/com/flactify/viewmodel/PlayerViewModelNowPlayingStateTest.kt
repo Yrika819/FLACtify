@@ -196,7 +196,8 @@ class PlayerViewModelNowPlayingStateTest {
     }
 
     @Test
-    fun `reconnecting invalidates pending results and publishes a complete connected snapshot`() {
+    fun `reconnecting invalidates pending results and publishes a complete connected snapshot`() =
+        kotlinx.coroutines.runBlocking {
         val viewModel = PlayerViewModel()
         val itemUri = uri("content://library/current")
         val item = mockMediaItem("current", itemUri, MediaMetadata.Builder().setTitle("item title").build())
@@ -218,9 +219,12 @@ class PlayerViewModelNowPlayingStateTest {
             val beforeDisconnectGeneration = viewModel.nowPlayingUiState.value.transitionGeneration
             viewModel.updateSessionConnection(SessionConnectionState.RECONNECTING, 1L)
             assertTrue(viewModel.nowPlayingUiState.value.transitionGeneration > beforeDisconnectGeneration)
+            val connectedSnapshot = async(start = CoroutineStart.UNDISPATCHED) {
+                viewModel.nowPlayingUiState.first { it.session == SessionConnectionState.CONNECTED }
+            }
             viewModel.resynchronizeNowPlayingState(controller, 2L)
 
-            val snapshot = viewModel.nowPlayingUiState.value
+            val snapshot = connectedSnapshot.await()
             assertEquals(SessionConnectionState.CONNECTED, snapshot.session)
             assertEquals(PlaybackState.READY, snapshot.playbackState)
             assertEquals("session title", snapshot.current?.title)
