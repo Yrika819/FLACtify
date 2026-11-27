@@ -311,7 +311,7 @@ class RegressionTest {
     }
 
     @Test
-    fun `P2-A - detectExtension defaults to mp3 for unknown extension`() {
+    fun `P2-A - detectExtension recognizes ogg container suffix when content is unavailable`() {
         val context = mockk<Context>(relaxed = true)
         val extractor = TrackMetadataExtractor(context)
 
@@ -322,7 +322,7 @@ class RegressionTest {
         every { androidx.documentfile.provider.DocumentFile.fromSingleUri(context, uri) } returns null
 
         val result = extractor.detectExtension(uri)
-        assertEquals("mp3", result)
+        assertEquals("ogg", result)
 
         unmockkStatic(androidx.documentfile.provider.DocumentFile::class)
     }

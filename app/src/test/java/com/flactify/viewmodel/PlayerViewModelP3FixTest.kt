@@ -79,12 +79,20 @@ class PlayerViewModelP3FixTest {
     }
 
     @Test
+    fun `getMimeTypeForExtension - ogg and opus use Media3 ogg extractor MIME`() {
+        val viewModel = PlayerViewModel()
+        val method = PlayerViewModel::class.java.getDeclaredMethod("getMimeTypeForExtension", String::class.java)
+        method.isAccessible = true
+        assertEquals("application/ogg", method.invoke(viewModel, "ogg"))
+        assertEquals("application/ogg", method.invoke(viewModel, "opus"))
+    }
+
+    @Test
     fun `getMimeTypeForExtension - unknown returns audio-mpeg as fallback`() {
         val viewModel = PlayerViewModel()
         val method = PlayerViewModel::class.java.getDeclaredMethod("getMimeTypeForExtension", String::class.java)
         method.isAccessible = true
-        val result = method.invoke(viewModel, "ogg")
-        assertEquals("audio/mpeg", result)
+        assertEquals("audio/mpeg", method.invoke(viewModel, "unknown"))
     }
 
     // ============================================================
@@ -226,6 +234,27 @@ class PlayerViewModelP3FixTest {
         val result = method.invoke(viewModel, root) as List<DocumentFile>
 
         assertEquals(2, result.size)
+    }
+
+    @Test
+    fun `collectAudioFiles - includes opus and ogg files`() {
+        val viewModel = PlayerViewModel()
+        val root = mockk<DocumentFile>()
+        val opus = mockk<DocumentFile> {
+            every { isDirectory } returns false
+            every { name } returns "voice.opus"
+        }
+        val ogg = mockk<DocumentFile> {
+            every { isDirectory } returns false
+            every { name } returns "recording.ogg"
+        }
+        every { root.listFiles() } returns arrayOf(opus, ogg)
+
+        val method = PlayerViewModel::class.java.getDeclaredMethod("collectAudioFiles", DocumentFile::class.java)
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val result = method.invoke(viewModel, root) as List<DocumentFile>
+        assertEquals(listOf("recording.ogg", "voice.opus"), result.map { it.name })
     }
 
     @Test
