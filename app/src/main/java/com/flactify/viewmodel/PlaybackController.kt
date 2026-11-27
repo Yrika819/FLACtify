@@ -39,7 +39,14 @@ class PlaybackController(
     private val onProgress: (Long, Long?) -> Unit,
     private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> },
     /** The queue vanished or the player became idle; the current item no longer owns its time. */
-    private val onPlaybackIdle: () -> Unit = {}
+    private val onPlaybackIdle: () -> Unit = {},
+    /** Full Media3 item snapshot used by the shared now-playing state. */
+    private val onCurrentMediaItemChanged: (MediaItem?, Boolean) -> Unit = { _, _ -> },
+    private val onPlaybackStateChanged: (Int) -> Unit = {},
+    private val onPlaybackError: () -> Unit = {},
+    private val onSeekabilityChanged: (Boolean) -> Unit = {},
+    private val onSessionConnectionChanged: (SessionConnectionState, Long) -> Unit = { _, _ -> },
+    private val onAuthoritativeSnapshot: (MediaController, Long) -> Unit = { _, _ -> }
 ) {
     var player: MediaController? = null
         private set
@@ -47,14 +54,48 @@ class PlaybackController(
     private var listener: Player.Listener? = null
     private var progressJob: Job? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var reconnectJob: Job? = null
+    private var appContext: Context? = null
+    private var readyCallback: ((MediaController) -> Unit)? = null
+    private var failureCallback: (() -> Unit)? = null
+    private var reconnecting = false
+    private var reconnectDelayMs = 500L
+    private var controllerGeneration = 0L
     private var initialized = false
     private var cleanedUp = false
 
     fun initialize(context: Context, onReady: (MediaController) -> Unit, onFailure: () -> Unit) {
         if (initialized || cleanedUp) return
         initialized = true
+        appContext = context.applicationContext
+        readyCallback = onReady
+        failureCallback = onFailure
+        connectController()
+    }
+
+    private fun connectController() {
+        val context = appContext ?: return
+        if (cleanedUp || controllerFuture != null || player != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, token).buildAsync()
+        val mediaControllerListener = object : MediaController.Listener {
+            override fun onDisconnected(controller: MediaController) {
+                if (player !== controller || cleanedUp) return
+                listener?.let(controller::removeListener)
+                listener = null
+                player = null
+                progressJob?.cancel()
+                progressJob = null
+                controllerGeneration++
+                reconnecting = true
+                onSessionConnectionChanged(SessionConnectionState.RECONNECTING, controllerGeneration)
+                controllerFuture?.let(MediaController::releaseFuture)
+                controllerFuture = null
+                scheduleReconnect()
+            }
+        }
+        val future = MediaController.Builder(context, token)
+            .setListener(mediaControllerListener)
+            .buildAsync()
         controllerFuture = future
         future.addListener({
             try {
@@ -63,14 +104,38 @@ class PlaybackController(
                     return@addListener
                 }
                 player = mediaController
+                reconnectDelayMs = 500L
+                val wasReconnect = reconnecting
+                reconnectJob?.cancel()
+                reconnectJob = null
                 val controllerListener = createControllerListener(mediaController)
                 listener = controllerListener
                 mediaController.addListener(controllerListener)
-                onReady(mediaController)
+                controllerGeneration++
+                reconnecting = false
+                onSessionConnectionChanged(SessionConnectionState.CONNECTED, controllerGeneration)
+                if (wasReconnect) syncState() else readyCallback?.invoke(mediaController)
             } catch (_: Exception) {
-                if (!cleanedUp) onFailure()
+                controllerFuture = null
+                if (!cleanedUp && reconnecting) {
+                    scheduleReconnect()
+                } else if (!cleanedUp) {
+                    controllerGeneration++
+                    onSessionConnectionChanged(SessionConnectionState.DISCONNECTED, controllerGeneration)
+                    failureCallback?.invoke()
+                }
             }
         }, MoreExecutors.directExecutor())
+    }
+
+    private fun scheduleReconnect() {
+        if (cleanedUp || reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            delay(reconnectDelayMs)
+            reconnectDelayMs = (reconnectDelayMs * 2L).coerceAtMost(8_000L)
+            reconnectJob = null
+            connectController()
+        }
     }
 
     /**
@@ -80,27 +145,43 @@ class PlaybackController(
     internal fun createControllerListener(mediaController: MediaController): Player.Listener =
         object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
+                if (player !== mediaController) return
                 onPlayingChanged(playing)
                 if (playing) startProgressUpdates()
             }
 
             override fun onMediaMetadataChanged(metadata: MediaMetadata) {
+                if (player !== mediaController) return
                 onMetadataChanged(metadata, currentUri())
+                onCurrentMediaItemChanged(mediaController.currentMediaItem, false)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (player !== mediaController) return
+                onCurrentMediaItemChanged(mediaItem, true)
                 handleMediaItemTransition(mediaItem)
                 publishPositionAndDuration(mediaController)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (player !== mediaController) return
+                this@PlaybackController.onPlaybackStateChanged.invoke(playbackState)
                 // A prepared (READY) or finished (ENDED) item has an authoritative duration even
                 // while playback is paused, so the UI must not wait for the 250 ms playing loop.
                 when (playbackState) {
                     Player.STATE_READY, Player.STATE_ENDED -> publishPositionAndDuration(mediaController)
                     // IDLE means the item was stopped or removed; keep no duration for it.
-                    Player.STATE_IDLE -> onPlaybackIdle()
+                    Player.STATE_IDLE -> {
+                        if (mediaController.currentMediaItem == null) {
+                            onCurrentMediaItemChanged(null, false)
+                        }
+                        onPlaybackIdle()
+                    }
                 }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (player === mediaController) this@PlaybackController.onPlaybackError()
             }
 
             override fun onPositionDiscontinuity(
@@ -108,29 +189,38 @@ class PlaybackController(
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
+                if (player !== mediaController) return
                 publishPositionAndDuration(mediaController, newPosition.positionMs)
             }
 
             override fun onTracksChanged(tracks: Tracks) {
+                if (player !== mediaController) return
                 onTracksChanged(tracks, currentUri())
             }
 
             override fun onShuffleModeEnabledChanged(enabled: Boolean) {
+                if (player !== mediaController) return
                 onShuffleChanged(enabled)
             }
 
             override fun onRepeatModeChanged(mode: Int) {
+                if (player !== mediaController) return
                 onRepeatChanged(mode)
             }
         }
 
     fun syncState(onIdle: () -> Unit = {}) {
         player?.let { mediaController ->
+            onAuthoritativeSnapshot(mediaController, controllerGeneration)
             onPlayingChanged(mediaController.isPlaying)
+            onPlaybackStateChanged(mediaController.playbackState)
+            onSeekabilityChanged(mediaController.isCurrentMediaItemSeekable)
             if (mediaController.currentMediaItem == null) {
+                onCurrentMediaItemChanged(null, false)
                 onPlaybackIdle()
                 onIdle()
             } else {
+                onCurrentMediaItemChanged(mediaController.currentMediaItem, false)
                 onMetadataChanged(mediaController.mediaMetadata, currentUri())
             }
             publishPositionAndDuration(mediaController)
@@ -382,6 +472,7 @@ class PlaybackController(
     }
 
     private fun publishPositionAndDuration(mediaController: MediaController, positionMs: Long) {
+        onSeekabilityChanged(mediaController.isCurrentMediaItemSeekable)
         onProgress(positionMs.coerceAtLeast(0L), durationOrNull(mediaController.duration))
     }
 
