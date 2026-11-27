@@ -17,10 +17,10 @@ Status: prepared after the Phase 6B-1 cloud checks; device execution remains pen
 
 ## Synthetic fixture set
 
-Prepare three short PCM WAV files with different pure tones and generated geometric PNG covers.
-Use distinct track IDs and titles A, B, and A2 so the final A can be identified independently
-while keeping the same A media identity/URI where queue behavior permits. Add a small synthetic
-LRC file with timed lines for A and B. The fixtures must contain no copied or licensed content.
+Prepare three short FLAC files with different generated pure tones. Embed generated geometric
+PNG covers in A and B, leave the third track without artwork, and embed short synthetic timed
+lyrics in A and B. Use distinct titles A, B, and No Artwork; exercise A → B → A by returning to
+the same A file/URI. The fixtures must contain no copied or licensed content.
 
 Place the files in one test folder on the Pixel and grant the app access through its normal
 folder picker. Use the following device checks:

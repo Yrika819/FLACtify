@@ -294,7 +294,13 @@ class PlayerViewModelNowPlayingStateTest {
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
             ?: error("$name was null")
 
-    private fun uri(@Suppress("UNUSED_PARAMETER") value: String): Uri = mockk(relaxed = true)
+    private fun uri(value: String): Uri {
+        val uri = mockk<Uri>(relaxed = true)
+        every { uri.toString() } returns value
+        every { uri.equals(any()) } answers { firstArg<Any>() === uri }
+        every { uri.hashCode() } returns value.hashCode()
+        return uri
+    }
 
     private fun mockMediaItem(mediaId: String, uri: Uri, metadata: MediaMetadata): MediaItem {
         return MediaItem.Builder().setMediaId(mediaId).setUri(uri).setMediaMetadata(metadata).build()
