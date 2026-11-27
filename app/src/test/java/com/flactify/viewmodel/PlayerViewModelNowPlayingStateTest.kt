@@ -235,6 +235,27 @@ class PlayerViewModelNowPlayingStateTest {
             assertEquals(true, snapshot.position.isSeekable)
             assertEquals(true, snapshot.shuffleEnabled)
             assertEquals(Player.REPEAT_MODE_ALL, snapshot.repeatMode)
+
+            every { controller.currentMediaItem } returns null
+            every { controller.playbackState } returns Player.STATE_IDLE
+            every { controller.currentPosition } returns 90_000L
+            every { controller.duration } returns 0L
+            every { controller.isCurrentMediaItemSeekable } returns true
+            viewModel.updateSessionConnection(SessionConnectionState.RECONNECTING, 3L)
+            viewModel.resynchronizeNowPlayingState(controller, 4L)
+            val noTrack = viewModel.nowPlayingUiState.value
+            assertNull(noTrack.current)
+            assertEquals(0L, noTrack.position.positionMs)
+            assertNull(noTrack.position.durationMs)
+            assertEquals(false, noTrack.position.isSeekable)
+
+            every { controller.playerError } returns mockk(relaxed = true)
+            viewModel.updateSessionConnection(SessionConnectionState.RECONNECTING, 5L)
+            viewModel.resynchronizeNowPlayingState(controller, 6L)
+            assertEquals(PlaybackState.ERROR, viewModel.nowPlayingUiState.value.playbackState)
+            assertNull(viewModel.nowPlayingUiState.value.current)
+            assertEquals(0L, viewModel.nowPlayingUiState.value.position.positionMs)
+            assertNull(viewModel.nowPlayingUiState.value.position.durationMs)
         } finally {
             viewModel.cleanup()
         }
