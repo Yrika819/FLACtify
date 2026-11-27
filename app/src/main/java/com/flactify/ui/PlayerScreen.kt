@@ -347,9 +347,17 @@ fun PlayerScreen(
                     ) {
                         // シークバー
                         Column(modifier = Modifier.fillMaxWidth()) {
+                        // duration が未確定（null）の間はシークさせない。0 は「長さ0の曲」と
+                        // して扱い、未確定とは区別する。
+                        val seekableDuration = duration?.takeIf { it > 0L }
                         Slider(
-                            value = if (duration > 0) currentPosition.toFloat() / duration else 0f,
-                            onValueChange = { viewModel.seekTo((it * duration).toLong()) },
+                            value = if (seekableDuration != null) {
+                                (currentPosition.toFloat() / seekableDuration).coerceIn(0f, 1f)
+                            } else 0f,
+                            onValueChange = { fraction ->
+                                seekableDuration?.let { viewModel.seekTo((fraction * it).toLong()) }
+                            },
+                            enabled = seekableDuration != null,
                             colors = SliderDefaults.colors(
                                 thumbColor = Color.White,
                                 activeTrackColor = Color.White,
@@ -362,7 +370,11 @@ fun PlayerScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(text = formatTime(currentPosition), color = Color(0xBBFFFFFF), fontSize = 12.sp)
-                            Text(text = formatTime(duration), color = Color(0xBBFFFFFF), fontSize = 12.sp)
+                            Text(
+                                text = duration?.let(::formatTime) ?: "--:--",
+                                color = Color(0xBBFFFFFF),
+                                fontSize = 12.sp
+                            )
                         }
                     }
 

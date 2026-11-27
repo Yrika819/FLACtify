@@ -60,6 +60,85 @@ class SpatialPlaybackQueueStateTest {
     }
 
     @Test
+    fun shuffleOrderTerminalItemIsTheOnlyFinalEosCandidate() {
+        val state = SpatialPlaybackQueueState()
+        val timeline = TestTimeline(periodWindows = listOf(0, 1, 2))
+        state.updatePlaybackOrder(
+            Player.REPEAT_MODE_OFF,
+            shuffleModeEnabled = true,
+            shuffleOrderLastIndex = 2
+        )
+
+        assertTrue(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-2")
+            )
+        )
+        assertFalse(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-1")
+            )
+        )
+        assertFalse(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-0")
+            )
+        )
+    }
+
+    @Test
+    fun shuffleWithRepeatNeverClaimsFinalEos() {
+        val state = SpatialPlaybackQueueState()
+        val timeline = TestTimeline(periodWindows = listOf(0, 1))
+        state.updatePlaybackOrder(
+            Player.REPEAT_MODE_ALL,
+            shuffleModeEnabled = true,
+            shuffleOrderLastIndex = 1
+        )
+        assertFalse(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-1")
+            )
+        )
+
+        state.updatePlaybackOrder(
+            Player.REPEAT_MODE_ONE,
+            shuffleModeEnabled = true,
+            shuffleOrderLastIndex = 1
+        )
+        assertFalse(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-1")
+            )
+        )
+    }
+
+    @Test
+    fun shuffleWithoutAKnownOrderEndDoesNotClaimFinalEos() {
+        val state = SpatialPlaybackQueueState()
+        val timeline = TestTimeline(periodWindows = listOf(0, 1))
+        state.updatePlaybackOrder(Player.REPEAT_MODE_OFF, shuffleModeEnabled = true)
+
+        assertFalse(
+            state.shouldDrainFinalHrtfTail(
+                rendererStreamIsFinal = true,
+                timeline,
+                MediaSource.MediaPeriodId("period-1")
+            )
+        )
+    }
+
+    @Test
     fun unknownTimelineAndAdStreamsDoNotClaimFinalHrtfEos() {
         val state = SpatialPlaybackQueueState()
         val timeline = TestTimeline(periodWindows = listOf(0))

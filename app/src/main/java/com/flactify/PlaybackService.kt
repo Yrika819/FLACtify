@@ -10,6 +10,7 @@ import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -17,6 +18,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioTrackAudioOutputProvider
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ShuffleOrder
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaNotification
@@ -28,6 +30,7 @@ import androidx.media3.session.SessionResult
 import com.flactify.audio.AudioRouteMonitor
 import com.flactify.audio.PlaybackAudioObserver
 import com.flactify.audio.PlaybackDiagnosticsBus
+import com.flactify.audio.PlaybackOrderInfo
 import com.flactify.audio.spatial.FlactifyRenderersFactory
 import com.flactify.audio.spatial.NativeSpatialEngine
 import com.flactify.audio.spatial.SpatialAudioMode
@@ -74,6 +77,25 @@ open class PlaybackService : MediaSessionService() {
     private var pendingFadeInListener: Player.Listener? = null
 
     companion object {
+        /**
+         * Trusted-controller command: rebuild the shuffle order so the current item starts the
+         * round. MediaController cannot call ExoPlayer.setShuffleOrder, so the service owns it.
+         */
+        const val SESSION_COMMAND_START_SHUFFLE_ROUND = "com.flactify.START_SHUFFLE_ROUND"
+
+        /** The queue and start item the controller intended when it sent the round command. */
+        const val SESSION_EXTRA_SHUFFLE_ROUND_QUEUE_FINGERPRINT =
+            "com.flactify.SHUFFLE_ROUND_QUEUE_FINGERPRINT"
+        const val SESSION_EXTRA_SHUFFLE_ROUND_ITEM_COUNT = "com.flactify.SHUFFLE_ROUND_ITEM_COUNT"
+        const val SESSION_EXTRA_SHUFFLE_ROUND_START_INDEX = "com.flactify.SHUFFLE_ROUND_START_INDEX"
+
+        /** True when this command actually rebuilt the order (false for a deduplicated no-op). */
+        const val SESSION_RESULT_EXTRA_SHUFFLE_ROUND_REBUILT =
+            "com.flactify.SHUFFLE_ROUND_REBUILT"
+        /** Why a round command was skipped, when it was not applied. */
+        const val SESSION_RESULT_EXTRA_SHUFFLE_ROUND_SKIP_REASON =
+            "com.flactify.SHUFFLE_ROUND_SKIP_REASON"
+
         /** Read local SAF tracks directly; duplicating them can waste storage and reuse stale
          * spans after an in-place metadata edit changes the FLAC frame offset. */
         fun getPlaybackDataSourceFactory(service: Context): DefaultDataSource.Factory =
@@ -82,6 +104,10 @@ open class PlaybackService : MediaSessionService() {
 
     private val spatialSessionCommand by lazy {
         SessionCommand(SpatialAudioMode.SESSION_COMMAND_ACTION, Bundle.EMPTY)
+    }
+
+    private val shuffleRoundSessionCommand by lazy {
+        SessionCommand(SESSION_COMMAND_START_SHUFFLE_ROUND, Bundle.EMPTY)
     }
 
     private val spatialSessionCallback = object : MediaSession.Callback {
@@ -95,6 +121,7 @@ open class PlaybackService : MediaSessionService() {
                     MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
                         .buildUpon()
                         .add(spatialSessionCommand)
+                        .add(shuffleRoundSessionCommand)
                         .build()
                 )
             }
@@ -107,6 +134,24 @@ open class PlaybackService : MediaSessionService() {
             customCommand: SessionCommand,
             args: Bundle
         ): ListenableFuture<SessionResult> {
+            if (customCommand.customAction == SESSION_COMMAND_START_SHUFFLE_ROUND) {
+                // The service owns the order. Apply synchronously against the authoritative player
+                // so the returned result describes what actually happened, and reject a command
+                // whose queue/current item is no longer the one the controller intended.
+                if (!args.containsKey(SESSION_EXTRA_SHUFFLE_ROUND_QUEUE_FINGERPRINT) ||
+                    !args.containsKey(SESSION_EXTRA_SHUFFLE_ROUND_ITEM_COUNT) ||
+                    !args.containsKey(SESSION_EXTRA_SHUFFLE_ROUND_START_INDEX)
+                ) {
+                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                }
+                val request = PlaybackShuffleRound.Request(
+                    queueFingerprint = args.getLong(SESSION_EXTRA_SHUFFLE_ROUND_QUEUE_FINGERPRINT),
+                    itemCount = args.getInt(SESSION_EXTRA_SHUFFLE_ROUND_ITEM_COUNT),
+                    startIndex = args.getInt(SESSION_EXTRA_SHUFFLE_ROUND_START_INDEX)
+                )
+                return Futures.immediateFuture(shuffleRoundResult(applyShuffleRound(request)))
+            }
+
             if (customCommand.customAction != SpatialAudioMode.SESSION_COMMAND_ACTION) {
                 return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             }
@@ -268,29 +313,120 @@ open class PlaybackService : MediaSessionService() {
                 onMedia3AudioSink = { PlaybackDiagnosticsBus.publishMedia3AudioSink(it) }
             )
         )
-        spatialPlaybackQueueState.updatePlaybackOrder(
-            target.repeatMode,
-            target.shuffleModeEnabled
-        )
+        publishPlaybackOrder(target)
         target.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 PlaybackDiagnosticsBus.resetForMediaItemTransition()
             }
 
             override fun onRepeatModeChanged(repeatMode: Int) {
-                spatialPlaybackQueueState.updatePlaybackOrder(
-                    repeatMode,
-                    target.shuffleModeEnabled
-                )
+                publishPlaybackOrder(target)
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                spatialPlaybackQueueState.updatePlaybackOrder(
-                    target.repeatMode,
-                    shuffleModeEnabled
-                )
+                publishPlaybackOrder(target)
+                // Shuffle can also be switched on from outside the app UI (notification, Bluetooth,
+                // another controller). Starting the round here keeps that path identical.
+                if (shuffleModeEnabled) startShuffleRoundFromCurrentItem()
+            }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                // Queue mutations clone/insert into the shuffle order, so the terminal index of
+                // the active order can move without a shuffle-mode change.
+                publishPlaybackOrder(target)
             }
         })
+    }
+
+    private fun publishPlaybackOrder(target: ExoPlayer) {
+        val order = PlaybackOrderInfo(
+            repeatMode = target.repeatMode,
+            shuffleModeEnabled = target.shuffleModeEnabled,
+            shuffleOrderLastIndex = target.shuffleOrder.lastIndex
+        )
+        spatialPlaybackQueueState.updatePlaybackOrder(
+            order.repeatMode,
+            order.shuffleModeEnabled,
+            order.shuffleOrderLastIndex
+        )
+        PlaybackDiagnosticsBus.publishPlaybackOrder(order)
+    }
+
+    /**
+     * Rebuilds the active shuffle order so the current item is the first item of the round.
+     *
+     * Media3's default shuffle order can start anywhere in the permutation. When the user starts
+     * from an arbitrary item, auto-advance then stops at the end of the permutation and the items
+     * before the start position are never played. Making the current item the head keeps repeat
+     * OFF to exactly one full pass, repeat ALL to a new round after that pass, and repeat ONE
+     * untouched.
+     */
+    private fun startShuffleRoundFromCurrentItem() {
+        applyShuffleRound(request = null)
+    }
+
+    /**
+     * Applies one round decision against the authoritative player. Returns null while the service
+     * player is not initialized; otherwise the decision describes whether a new order was built.
+     */
+    private fun applyShuffleRound(
+        request: PlaybackShuffleRound.Request?
+    ): PlaybackShuffleRound.Decision? {
+        if (!::player.isInitialized) return null
+        val state = PlaybackShuffleRound.State(
+            itemCount = player.mediaItemCount,
+            currentIndex = player.currentMediaItemIndex,
+            queueFingerprint = PlaybackShuffleRound.queueFingerprint(
+                (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+            ),
+            activeOrderLength = player.shuffleOrder.length,
+            activeOrderFirstIndex = player.shuffleOrder.firstIndex
+        )
+        val decision = PlaybackShuffleRound.decide(
+            request = request,
+            shuffleModeEnabled = player.shuffleModeEnabled,
+            state = state
+        )
+        when (decision) {
+            PlaybackShuffleRound.Decision.APPLY -> {
+                val order = PlaybackShuffleRound.orderStartingAt(
+                    state.itemCount,
+                    state.currentIndex
+                ) ?: return PlaybackShuffleRound.Decision.NOTHING_TO_REORDER
+                player.setShuffleOrder(
+                    ShuffleOrder.DefaultShuffleOrder(order, kotlin.random.Random.nextLong())
+                )
+                publishPlaybackOrder(player)
+            }
+            PlaybackShuffleRound.Decision.ALREADY_APPLIED,
+            PlaybackShuffleRound.Decision.NOTHING_TO_REORDER -> publishPlaybackOrder(player)
+            else -> Unit
+        }
+        return decision
+    }
+
+    private fun shuffleRoundResult(decision: PlaybackShuffleRound.Decision?): SessionResult {
+        if (decision == null) return SessionResult(SessionError.ERROR_INVALID_STATE)
+        val extras = Bundle()
+        val applied = decision == PlaybackShuffleRound.Decision.APPLY
+        extras.putBoolean(SESSION_RESULT_EXTRA_SHUFFLE_ROUND_REBUILT, applied)
+        val success = applied ||
+            decision == PlaybackShuffleRound.Decision.ALREADY_APPLIED ||
+            decision == PlaybackShuffleRound.Decision.NOTHING_TO_REORDER
+        if (!success) {
+            extras.putString(SESSION_RESULT_EXTRA_SHUFFLE_ROUND_SKIP_REASON, decision.name)
+        }
+        return SessionResult(
+            if (success) {
+                SessionResult.RESULT_SUCCESS
+            } else {
+                // RESULT_INFO_SKIPPED is not a valid custom-command result code. A skipped round
+                // is a state refusal, not a success, so encode it as ERROR_INVALID_STATE and keep
+                // the reason in extras.
+                SessionError.ERROR_INVALID_STATE
+            },
+            extras
+        )
     }
 
     private fun replacePlayerForSpatialConfig(

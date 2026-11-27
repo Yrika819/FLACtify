@@ -15,6 +15,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import com.flactify.PlaybackService
+import com.flactify.PlaybackShuffleRound
 import com.flactify.audio.spatial.SpatialAudioMode
 import com.flactify.audio.spatial.SpatialHrtfMixPercent
 import com.google.common.util.concurrent.MoreExecutors
@@ -32,8 +33,13 @@ class PlaybackController(
     private val onTracksChanged: (Tracks, Uri?) -> Unit,
     private val onShuffleChanged: (Boolean) -> Unit,
     private val onRepeatChanged: (Int) -> Unit,
-    private val onProgress: (Long, Long) -> Unit,
-    private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> }
+    /** Reports the position and the duration in milliseconds. The duration is null while the
+     *  player has not resolved it yet (Media3 [androidx.media3.common.C.TIME_UNSET]), so an
+     *  unknown duration never looks like a genuine zero-length item. */
+    private val onProgress: (Long, Long?) -> Unit,
+    private val onMediaItemTransition: (MediaMetadata, Uri?) -> Unit = { _, _ -> },
+    /** The queue vanished or the player became idle; the current item no longer owns its time. */
+    private val onPlaybackIdle: () -> Unit = {}
 ) {
     var player: MediaController? = null
         private set
@@ -57,44 +63,7 @@ class PlaybackController(
                     return@addListener
                 }
                 player = mediaController
-                val controllerListener = object : Player.Listener {
-                    override fun onIsPlayingChanged(playing: Boolean) {
-                        onPlayingChanged(playing)
-                        if (playing) startProgressUpdates()
-                    }
-
-                    override fun onMediaMetadataChanged(metadata: MediaMetadata) {
-                        onMetadataChanged(metadata, currentUri())
-                    }
-
-                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        handleMediaItemTransition(mediaItem)
-                        onProgress(
-                            mediaController.currentPosition,
-                            mediaController.duration.coerceAtLeast(0L)
-                        )
-                    }
-
-                    override fun onPositionDiscontinuity(
-                        oldPosition: Player.PositionInfo,
-                        newPosition: Player.PositionInfo,
-                        reason: Int
-                    ) {
-                        onProgress(newPosition.positionMs, mediaController.duration.coerceAtLeast(0L))
-                    }
-
-                    override fun onTracksChanged(tracks: Tracks) {
-                        onTracksChanged(tracks, currentUri())
-                    }
-
-                    override fun onShuffleModeEnabledChanged(enabled: Boolean) {
-                        onShuffleChanged(enabled)
-                    }
-
-                    override fun onRepeatModeChanged(mode: Int) {
-                        onRepeatChanged(mode)
-                    }
-                }
+                val controllerListener = createControllerListener(mediaController)
                 listener = controllerListener
                 mediaController.addListener(controllerListener)
                 onReady(mediaController)
@@ -104,15 +73,67 @@ class PlaybackController(
         }, MoreExecutors.directExecutor())
     }
 
+    /**
+     * The controller listener is a separate factory so the reporting contract (transition,
+     * discontinuity, READY/ENDED duration publication) can be exercised without a live session.
+     */
+    internal fun createControllerListener(mediaController: MediaController): Player.Listener =
+        object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                onPlayingChanged(playing)
+                if (playing) startProgressUpdates()
+            }
+
+            override fun onMediaMetadataChanged(metadata: MediaMetadata) {
+                onMetadataChanged(metadata, currentUri())
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                handleMediaItemTransition(mediaItem)
+                publishPositionAndDuration(mediaController)
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                // A prepared (READY) or finished (ENDED) item has an authoritative duration even
+                // while playback is paused, so the UI must not wait for the 250 ms playing loop.
+                when (playbackState) {
+                    Player.STATE_READY, Player.STATE_ENDED -> publishPositionAndDuration(mediaController)
+                    // IDLE means the item was stopped or removed; keep no duration for it.
+                    Player.STATE_IDLE -> onPlaybackIdle()
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                publishPositionAndDuration(mediaController, newPosition.positionMs)
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                onTracksChanged(tracks, currentUri())
+            }
+
+            override fun onShuffleModeEnabledChanged(enabled: Boolean) {
+                onShuffleChanged(enabled)
+            }
+
+            override fun onRepeatModeChanged(mode: Int) {
+                onRepeatChanged(mode)
+            }
+        }
+
     fun syncState(onIdle: () -> Unit = {}) {
         player?.let { mediaController ->
             onPlayingChanged(mediaController.isPlaying)
             if (mediaController.currentMediaItem == null) {
+                onPlaybackIdle()
                 onIdle()
             } else {
                 onMetadataChanged(mediaController.mediaMetadata, currentUri())
             }
-            onProgress(mediaController.currentPosition, mediaController.duration.coerceAtLeast(0L))
+            publishPositionAndDuration(mediaController)
             onShuffleChanged(mediaController.shuffleModeEnabled)
             onRepeatChanged(mediaController.repeatMode)
             if (mediaController.isPlaying) startProgressUpdates()
@@ -141,6 +162,18 @@ class PlaybackController(
         if (mediaController.hasMediaItems(desiredItems)) {
             restoreShuffle?.let { mediaController.shuffleModeEnabled = it }
             restoreRepeat?.let { mediaController.repeatMode = it }
+            // Only an explicit restore needs a round on an unchanged queue. A library refresh
+            // with no queue change must leave the active round alone; enabling shuffle is already
+            // handled by the service listener.
+            if (restoreShuffle == true) {
+                startShuffleRoundFromCurrentItem(
+                    mediaController,
+                    PlaybackShuffleRound.requestFor(
+                        desiredItems.map(MediaItem::mediaId),
+                        mediaController.currentMediaItemIndex
+                    )
+                )
+            }
             return
         }
 
@@ -155,15 +188,37 @@ class PlaybackController(
         if (tracks.isNotEmpty()) {
             val resumeIndex = restoreUri?.let { uri -> tracks.indexOfFirst { it.uri == uri } } ?: -1
             val targetIndex = if (resumeIndex >= 0) resumeIndex else resolveTargetIndex(tracks, currentUri, forceRandom)
-            if (resumeIndex >= 0) {
+            val effectiveIndex = if (resumeIndex >= 0) {
                 mediaController.seekTo(targetIndex, restorePosition.coerceAtLeast(0L))
+                targetIndex
             } else if (forceRandom || currentUri == null) {
                 mediaController.seekTo(targetIndex, 0L)
+                targetIndex
             } else {
                 val newIndex = tracks.indexOfFirst { it.uri == currentUri }
-                if (newIndex != -1) mediaController.seekTo(newIndex, currentPosition)
-                else mediaController.seekTo(targetIndex, 0L)
-                if (wasPlaying) mediaController.play()
+                (
+                    if (newIndex != -1) {
+                        mediaController.seekTo(newIndex, currentPosition)
+                        newIndex
+                    } else {
+                        mediaController.seekTo(targetIndex, 0L)
+                        targetIndex
+                    }
+                ).also {
+                    if (wasPlaying) mediaController.play()
+                }
+            }
+            // The queue was rebuilt: make sure a shuffle round starts at the restored/selected item
+            // instead of somewhere inside Media3's previous permutation. The request carries the
+            // intended index because MediaController reflects session state asynchronously.
+            if (restoreShuffle != false) {
+                startShuffleRoundFromCurrentItem(
+                    mediaController,
+                    PlaybackShuffleRound.requestFor(
+                        desiredItems.map(MediaItem::mediaId),
+                        effectiveIndex
+                    )
+                )
             }
         }
     }
@@ -219,30 +274,23 @@ class PlaybackController(
         mimeType: (String) -> String
     ) {
         val mediaController = player ?: return
-        mediaController.setMediaItems(tracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.uri.toString())
-                .setUri(track.uri)
-                .setMimeType(mimeType(fileExtension(track.uri)))
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.title)
-                        .setArtist(track.artist)
-                        .setAlbumTitle(track.album)
-                        .build()
-                )
-                .build()
-        }, initialIndex, 0L)
+        val items = buildMediaItems(tracks, fileExtension, mimeType)
+        mediaController.setMediaItems(items, initialIndex, 0L)
         mediaController.prepare()
         mediaController.play()
+        startShuffleRoundFromCurrentItem(
+            mediaController,
+            PlaybackShuffleRound.requestFor(items.map(MediaItem::mediaId), initialIndex)
+        )
     }
 
     fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
     fun seekTo(position: Long) {
         player?.let { mediaController ->
-            val duration = mediaController.duration.coerceAtLeast(0L)
+            // Unknown duration is not a zero-length item: only clamp when the duration is known.
+            val duration = durationOrNull(mediaController.duration)
             val target = position.coerceAtLeast(0L).let { requested ->
-                if (duration > 0L) requested.coerceAtMost(duration) else requested
+                duration?.let { requested.coerceAtMost(it) } ?: requested
             }
             mediaController.seekTo(target)
             onProgress(target, duration)
@@ -250,7 +298,37 @@ class PlaybackController(
     }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
-    fun setShuffle(enabled: Boolean) { player?.shuffleModeEnabled = enabled }
+    fun setShuffle(enabled: Boolean) {
+        // The service starts the round from onShuffleModeEnabledChanged, which also covers
+        // notification/Bluetooth/other-controller changes. Sending a command here as well made
+        // the service rebuild the same round twice.
+        player?.shuffleModeEnabled = enabled
+    }
+
+    /**
+     * Asks the service to rebuild the active shuffle order with the current item first. Only the
+     * service owns the ExoPlayer, and MediaController exposes no setShuffleOrder(), so this rides
+     * on the same trusted-session-command pattern as the spatial audio command.
+     */
+    private fun startShuffleRoundFromCurrentItem(
+        mediaController: MediaController,
+        request: PlaybackShuffleRound.Request?
+    ) {
+        // The request describes the queue the app just loaded, not the asynchronously reflected
+        // controller state. The service compares it with its authoritative queue and current item.
+        if (request == null) return
+        mediaController.sendCustomCommand(
+            SessionCommand(PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND, Bundle()),
+            Bundle().apply {
+                putLong(
+                    PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_QUEUE_FINGERPRINT,
+                    request.queueFingerprint
+                )
+                putInt(PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_ITEM_COUNT, request.itemCount)
+                putInt(PlaybackService.SESSION_EXTRA_SHUFFLE_ROUND_START_INDEX, request.startIndex)
+            }
+        )
+    }
     fun setRepeat(mode: Int) { player?.repeatMode = mode }
     fun pause() { player?.pause() }
 
@@ -299,11 +377,22 @@ class PlaybackController(
         onMediaItemTransition(metadata, uri)
     }
 
+    private fun publishPositionAndDuration(mediaController: MediaController) {
+        publishPositionAndDuration(mediaController, mediaController.currentPosition)
+    }
+
+    private fun publishPositionAndDuration(mediaController: MediaController, positionMs: Long) {
+        onProgress(positionMs.coerceAtLeast(0L), durationOrNull(mediaController.duration))
+    }
+
+    /** Media3 reports an unresolved duration as C.TIME_UNSET; a genuine zero stays zero. */
+    private fun durationOrNull(durationMs: Long): Long? = durationMs.takeIf { it >= 0L }
+
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = scope.launch {
             while (player?.isPlaying == true) {
-                player?.let { onProgress(it.currentPosition, it.duration) }
+                player?.let { publishPositionAndDuration(it) }
                 delay(250)
             }
         }

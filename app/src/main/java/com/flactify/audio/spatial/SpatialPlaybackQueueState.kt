@@ -20,9 +20,21 @@ internal class SpatialPlaybackQueueState {
     @Volatile
     private var shuffleModeEnabled: Boolean = false
 
-    fun updatePlaybackOrder(repeatMode: Int, shuffleModeEnabled: Boolean) {
+    /**
+     * Window index of the last item in the active shuffle order, or [C.INDEX_UNSET] when the
+     * currently active order is not known yet. Only meaningful while [shuffleModeEnabled] is true.
+     */
+    @Volatile
+    private var shuffleOrderLastIndex: Int = C.INDEX_UNSET
+
+    fun updatePlaybackOrder(
+        repeatMode: Int,
+        shuffleModeEnabled: Boolean,
+        shuffleOrderLastIndex: Int = C.INDEX_UNSET
+    ) {
         this.repeatMode = repeatMode
         this.shuffleModeEnabled = shuffleModeEnabled
+        this.shuffleOrderLastIndex = shuffleOrderLastIndex
     }
 
     @OptIn(UnstableApi::class)
@@ -42,12 +54,21 @@ internal class SpatialPlaybackQueueState {
         if (periodIndex == C.INDEX_UNSET) return false
 
         val period = timeline.getPeriod(periodIndex, Timeline.Period())
-        return timeline.isLastPeriod(
-            periodIndex,
-            period,
-            Timeline.Window(),
-            repeatMode,
-            shuffleModeEnabled
-        )
+        if (!shuffleModeEnabled) {
+            return timeline.isLastPeriod(
+                periodIndex,
+                period,
+                Timeline.Window(),
+                repeatMode,
+                false
+            )
+        }
+        // Timeline.isLastPeriod() ignores the actual shuffle order, so it would treat the last
+        // window of the playlist as terminal even when the active order has unplayed items left.
+        if (repeatMode != Player.REPEAT_MODE_OFF) return false
+        val lastIndex = shuffleOrderLastIndex
+        if (lastIndex == C.INDEX_UNSET || period.windowIndex != lastIndex) return false
+        val window = timeline.getWindow(period.windowIndex, Timeline.Window())
+        return window.lastPeriodIndex == periodIndex
     }
 }

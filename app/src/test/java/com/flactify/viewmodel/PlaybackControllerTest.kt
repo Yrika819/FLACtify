@@ -43,6 +43,84 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `enabling shuffle waits for the service instead of sending a duplicate round command`() {
+        val player = mockk<MediaController>(relaxed = true)
+        val controller = newController(player)
+
+        controller.setShuffle(true)
+
+        verify { player.shuffleModeEnabled = true }
+        // PlaybackService.onShuffleModeEnabledChanged owns the round. Sending a second command
+        // here made the service rebuild the same round twice.
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
+    fun `disabling shuffle keeps the queue order`() {
+        val player = mockk<MediaController>(relaxed = true)
+        val controller = newController(player)
+
+        controller.setShuffle(false)
+
+        verify { player.shuffleModeEnabled = false }
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
+    fun `playTracks starts a shuffle round for the new queue`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.currentMediaItem } returns null
+        val controller = newController(player)
+
+        controller.playTracks(
+            listOf(track("One", "content://one"), track("Two", "content://two")),
+            1,
+            { "flac" },
+            { "audio/flac" }
+        )
+
+        verify(exactly = 1) {
+            player.sendCustomCommand(
+                match {
+                    it.customAction == com.flactify.PlaybackService.SESSION_COMMAND_START_SHUFFLE_ROUND
+                },
+                any()
+            )
+        }
+    }
+
+    @Test
+    fun `setPlaylist does not rebuild the round for an unchanged queue`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        every { player.shuffleModeEnabled } returns true
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 }
+        )
+
+        // A library refresh with no queue change must not restart the active round.
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
+    fun `setPlaylist does not request a round when shuffle is explicitly off`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 },
+            restoreShuffle = false
+        )
+
+        verify(exactly = 0) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
     fun `cleanup releases player reference`() {
         val player = mockk<MediaController>(relaxed = true)
         val listener = mockk<Player.Listener>()
@@ -156,6 +234,24 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `setPlaylist requests a round when restoring a shuffle queue`() {
+        val tracks = listOf(track("One", "content://one"), track("Two", "content://two"))
+        val player = mediaControllerWithQueue(tracks)
+        every { player.currentMediaItemIndex } returns 0
+        val controller = newController(player)
+
+        controller.setPlaylist(
+            tracks, { "flac" }, { "audio/flac" }, forceRandom = false,
+            resolveTargetIndex = { _, _, _ -> 0 },
+            restoreUri = Uri.parse("content://two"), restorePosition = 0L,
+            restoreShuffle = true, restoreRepeat = Player.REPEAT_MODE_OFF
+        )
+
+        // Process regeneration restores the queue, then re-establishes the round at the resume item.
+        verify(exactly = 1) { player.sendCustomCommand(any(), any()) }
+    }
+
+    @Test
     fun `setPlaylist rebuilds once when a track is added`() {
         val initial = listOf(track("One", "content://one"))
         val player = mediaControllerWithQueue(initial)
@@ -202,7 +298,7 @@ class PlaybackControllerTest {
     fun `seekTo publishes the requested position while playback is paused`() {
         val player = mockk<MediaController>(relaxed = true)
         every { player.duration } returns 60_000L
-        val progressUpdates = mutableListOf<Pair<Long, Long>>()
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
         val controller = PlaybackController(
             scope = CoroutineScope(Dispatchers.Unconfined),
             onPlayingChanged = {},
@@ -218,6 +314,97 @@ class PlaybackControllerTest {
 
         verify(exactly = 1) { player.seekTo(12_345L) }
         assertEquals(listOf(12_345L to 60_000L), progressUpdates)
+    }
+
+    @Test
+    fun `media item transition reports an unresolved duration as unknown`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns androidx.media3.common.C.TIME_UNSET
+        every { player.currentPosition } returns 0L
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onMediaItemTransition(
+            null,
+            Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
+        )
+
+        assertEquals(listOf(0L to null), progressUpdates)
+    }
+
+    @Test
+    fun `ready state publishes a resolved duration while playback is paused`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns 245_000L
+        every { player.currentPosition } returns 12_000L
+        every { player.isPlaying } returns false
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onPlaybackStateChanged(Player.STATE_READY)
+
+        assertEquals(listOf(12_000L to 245_000L), progressUpdates)
+    }
+
+    @Test
+    fun `idle playback invalidates the resolved duration`() {
+        val player = mockk<MediaController>(relaxed = true)
+        var idleInvalidations = 0
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { _, _ -> },
+            onPlaybackIdle = { idleInvalidations++ }
+        )
+        setPlayer(controller, player)
+
+        controller.createControllerListener(player).onPlaybackStateChanged(Player.STATE_IDLE)
+
+        assertEquals(1, idleInvalidations)
+    }
+
+    @Test
+    fun `seekTo does not clamp against an unresolved duration`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.duration } returns androidx.media3.common.C.TIME_UNSET
+        val progressUpdates = mutableListOf<Pair<Long, Long?>>()
+        val controller = PlaybackController(
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            onPlayingChanged = {},
+            onMetadataChanged = { _, _ -> },
+            onTracksChanged = { _, _ -> },
+            onShuffleChanged = {},
+            onRepeatChanged = {},
+            onProgress = { position, duration -> progressUpdates += position to duration }
+        )
+        setPlayer(controller, player)
+
+        controller.seekTo(90_000L)
+
+        verify(exactly = 1) { player.seekTo(90_000L) }
+        assertEquals(listOf(90_000L to null), progressUpdates)
     }
 
     @Test
