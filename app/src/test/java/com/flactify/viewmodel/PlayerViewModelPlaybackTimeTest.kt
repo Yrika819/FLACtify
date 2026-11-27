@@ -2,7 +2,6 @@ package com.flactify.viewmodel
 
 import io.mockk.mockk
 import io.mockk.verify
-import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -116,7 +115,8 @@ class PlayerViewModelPlaybackTimeTest {
             viewModel.seekTo(30_000L)
             verify(exactly = 0) { controller.seekTo(any()) }
 
-            (getField(viewModel, "_duration") as MutableStateFlow<Long?>).value = 120_000L
+            viewModel.applyPlaybackProgress(0L, 120_000L)
+            viewModel.applyPlaybackSeekability(true)
             viewModel.seekTo(150_000L)
             verify(exactly = 1) { controller.seekTo(120_000L) }
         } finally {

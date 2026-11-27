@@ -11,6 +11,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
@@ -29,9 +30,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -194,6 +198,18 @@ class PlayerViewModel : ViewModel() {
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
+
+    private val _nowPlayingUiState = MutableStateFlow(NowPlayingUiState())
+    /** Canonical immutable playback snapshot. Position ticks are intentionally available separately. */
+    val nowPlayingUiState: StateFlow<NowPlayingUiState> = _nowPlayingUiState
+    /** Snapshot projection for player surfaces that do not render progress; it does not tick at 4 Hz. */
+    val nowPlayingContentState: Flow<NowPlayingUiState> = nowPlayingUiState
+        .map { it.copy(position = PositionState()) }
+        .distinctUntilChanged()
+    /** Collect only in the local progress/seek surface, never at the app navigation root. */
+    val nowPlayingPosition: Flow<PositionState> = nowPlayingUiState
+        .map { it.position }
+        .distinctUntilChanged()
 
     private val _pauseOnBluetoothDisconnect = MutableStateFlow(
         PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
@@ -411,7 +427,7 @@ class PlayerViewModel : ViewModel() {
         playbackController = PlaybackController(
             scope = viewModelScope,
             onPlayingChanged = { isPlaying ->
-                _isPlaying.value = isPlaying
+                applyPlaybackPlayingState(isPlaying)
                 if (!isPlaying) persistPlaybackPosition()
             },
             onMetadataChanged = { metadata, uri ->
@@ -427,10 +443,12 @@ class PlayerViewModel : ViewModel() {
             },
             onShuffleChanged = { enabled ->
                 _isShuffleMode.value = enabled
+                applyShuffleRepeatState(shuffleEnabled = enabled)
                 sharedPreferences?.edit()?.putBoolean("shuffle", enabled)?.apply()
             },
             onRepeatChanged = { mode ->
                 _repeatMode.value = mode
+                applyShuffleRepeatState(repeatMode = mode)
                 sharedPreferences?.edit()?.putInt("repeat", mode)?.apply()
             },
             onProgress = { position, duration ->
@@ -449,10 +467,25 @@ class PlayerViewModel : ViewModel() {
                         }
                 }
             },
-            onMediaItemTransition = { metadata, uri ->
-                handlePlaybackMediaItemTransition(appContext, metadata, uri)
+            onPlaybackIdle = { onPlaybackIdle() },
+            onCurrentMediaItemChanged = { item, transitioned, metadata ->
+                handleCurrentMediaItemChanged(appContext, item, transitioned, metadata)
             },
-            onPlaybackIdle = { onPlaybackIdle() }
+            onPlaybackStateChanged = { playbackState, hasPlayerError ->
+                applyPlaybackState(if (hasPlayerError) PlaybackState.ERROR else playbackStateOf(playbackState))
+            },
+            onPlaybackError = {
+                applyPlaybackState(PlaybackState.ERROR)
+            },
+            onSeekabilityChanged = { seekable ->
+                applyPlaybackSeekability(seekable)
+            },
+            onSessionConnectionChanged = { connection, generation ->
+                updateSessionConnection(connection, generation)
+            },
+            onAuthoritativeSnapshot = { mediaController, generation ->
+                resynchronizeNowPlayingState(mediaController, generation, appContext)
+            }
         )
         playbackController?.initialize(
             context = appContext,
@@ -464,6 +497,7 @@ class PlayerViewModel : ViewModel() {
                     _currentPosition.value = 0L
                     invalidatePlaybackDuration()
                     updateTrackDetails(appContext, null)
+                    clearNowPlayingTrack(advanceGeneration = false)
                 }
                 val lastUriStr = sharedPreferences?.getString("last_uri", null)
                 if (lastUriStr != null) {
@@ -490,7 +524,199 @@ class PlayerViewModel : ViewModel() {
             ?.apply()
     }
 
-    private fun updateTrackDetails(context: Context, uri: Uri?) {
+    internal fun updateSessionConnection(state: SessionConnectionState, generation: Long) {
+        val current = _nowPlayingUiState.value
+        if (generation < current.controllerGeneration) return
+        if (current.session == state && current.controllerGeneration == generation) return
+        if (state == SessionConnectionState.RECONNECTING && current.session != SessionConnectionState.RECONNECTING) {
+            // A transition may have happened while the old controller was unavailable. Advance
+            // the stamp now, so work started for a pre-disconnect A can never match reconnected A.
+            detailsGeneration++
+            metadataJob?.cancel()
+            metadataJob = null
+            diagnosticsJob?.cancel()
+            diagnosticsJob = null
+            detailsUri = null
+            detailsSettled = false
+        }
+        val transitionGeneration = current.transitionGeneration +
+            if (state == SessionConnectionState.RECONNECTING && current.session != SessionConnectionState.RECONNECTING) 1L else 0L
+        _nowPlayingUiState.value = current.copy(
+            session = state,
+            controllerGeneration = generation,
+            transitionGeneration = transitionGeneration
+        )
+    }
+
+    internal fun applyPlaybackPlayingState(isPlaying: Boolean) {
+        _isPlaying.value = isPlaying
+        _nowPlayingUiState.value = _nowPlayingUiState.value.copy(isPlaying = isPlaying)
+    }
+
+    internal fun applyPlaybackState(playbackState: PlaybackState) {
+        _nowPlayingUiState.value = _nowPlayingUiState.value.copy(playbackState = playbackState)
+    }
+
+    internal fun applyShuffleRepeatState(
+        shuffleEnabled: Boolean? = null,
+        repeatMode: Int? = null
+    ) {
+        val current = _nowPlayingUiState.value
+        _nowPlayingUiState.value = current.copy(
+            shuffleEnabled = shuffleEnabled ?: current.shuffleEnabled,
+            repeatMode = repeatMode ?: current.repeatMode
+        )
+    }
+
+    internal fun resynchronizeNowPlayingState(
+        mediaController: MediaController,
+        controllerGeneration: Long,
+        context: Context? = null
+    ) {
+        val previous = _nowPlayingUiState.value
+        if (controllerGeneration < previous.controllerGeneration) return
+        val item = mediaController.currentMediaItem
+        val uri = item?.localConfiguration?.uri
+        val identity = if (item != null && uri != null) TrackIdentity(item.mediaId, uri) else null
+        val sameTrack = identity != null && identity == previous.current?.identity
+        val reconnecting = previous.session == SessionConnectionState.RECONNECTING
+        val transitionGeneration = previous.transitionGeneration +
+            if (identity != previous.current?.identity) 1L else 0L
+        if (identity != previous.current?.identity) clearTrackBoundDetails()
+        val duration = if (identity != null) {
+            mediaController.duration.takeIf { it >= 0L }
+                ?: previous.position.durationMs.takeIf { sameTrack }
+        } else null
+        val metadata = mediaController.mediaMetadata
+        val track = if (identity != null) {
+            val oldTrack = previous.current?.takeIf { sameTrack }
+            CurrentTrack(
+                identity = identity,
+                title = metadata.title?.toString(),
+                artist = metadata.artist?.toString(),
+                album = metadata.albumTitle?.toString(),
+                artwork = metadata.artworkUri?.let {
+                    ArtworkState.Available(it, transitionGeneration)
+                } ?: oldTrack?.artwork ?: ArtworkState.Loading
+            )
+        } else null
+
+        _nowPlayingUiState.value = previous.copy(
+            current = track,
+            transitionGeneration = transitionGeneration,
+            playbackState = if (mediaController.playerError != null) PlaybackState.ERROR
+                else playbackStateOf(mediaController.playbackState),
+            isPlaying = mediaController.isPlaying,
+            position = PositionState(
+                positionMs = if (identity == null) 0L else mediaController.currentPosition.coerceAtLeast(0L),
+                durationMs = duration,
+                isSeekable = identity != null && mediaController.isCurrentMediaItemSeekable
+            ),
+            shuffleEnabled = mediaController.shuffleModeEnabled,
+            repeatMode = mediaController.repeatMode,
+            session = SessionConnectionState.CONNECTED,
+            controllerGeneration = controllerGeneration
+        )
+        _isPlaying.value = mediaController.isPlaying
+        _currentPosition.value = mediaController.currentPosition.coerceAtLeast(0L)
+        _duration.value = duration
+        _isShuffleMode.value = mediaController.shuffleModeEnabled
+        _repeatMode.value = mediaController.repeatMode
+        if (reconnecting && identity != null && identity == previous.current?.identity) {
+            context?.let { updateTrackDetails(it, uri) }
+        }
+        _currentTrackName.value = track?.title?.takeIf { it.isNotBlank() }
+            ?: if (track == null) "未再生" else "不明"
+        _currentArtist.value = track?.artist?.takeIf { it.isNotBlank() } ?: ""
+    }
+
+    internal fun handleCurrentMediaItemChanged(
+        context: Context,
+        item: MediaItem?,
+        transitioned: Boolean,
+        notifiedMetadata: androidx.media3.common.MediaMetadata?
+    ) {
+        val uri = item?.localConfiguration?.uri
+        if (item == null || uri == null) {
+            val current = _nowPlayingUiState.value
+            if (transitioned || current.current != null) {
+                clearTrackBoundDetails()
+                clearNowPlayingTrack(advanceGeneration = true)
+                _currentTrackName.value = "未再生"
+                _currentArtist.value = ""
+                _currentPosition.value = 0L
+                invalidatePlaybackDuration()
+                updateTrackDetails(context, null)
+            }
+            return
+        }
+
+        // Media3's callback metadata is authoritative for this notification and may be newer
+        // than the MediaItem's originally attached metadata.
+        val metadata = notifiedMetadata ?: item.mediaMetadata
+        val identity = TrackIdentity(item.mediaId, uri)
+        val current = _nowPlayingUiState.value
+        if (transitioned || current.current?.identity != identity) {
+            handlePlaybackMediaItemTransition(
+                context = context,
+                metadata = metadata,
+                uri = uri,
+                mediaId = item.mediaId,
+                artworkUri = metadata.artworkUri,
+                album = metadata.albumTitle?.toString()
+            )
+        } else {
+            val track = current.current ?: return
+            _currentTrackName.value = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "不明"
+            _currentArtist.value = metadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: "不明なアーティスト"
+            val cachedArtwork = track.artwork as? ArtworkState.Available
+            val shouldReloadArtwork = metadata.artworkUri == null &&
+                cachedArtwork?.source != ArtworkState.Available.Source.TRACK_CACHE &&
+                track.artwork != ArtworkState.Unavailable
+            val artwork = metadata.artworkUri?.let {
+                ArtworkState.Available(it, current.transitionGeneration)
+            } ?: cachedArtwork?.takeIf { it.source == ArtworkState.Available.Source.TRACK_CACHE }
+                ?: if (track.artwork == ArtworkState.Unavailable) ArtworkState.Unavailable
+                else ArtworkState.Loading
+            _nowPlayingUiState.value = current.copy(
+                current = track.copy(
+                    title = metadata.title?.toString(),
+                    artist = metadata.artist?.toString(),
+                    album = metadata.albumTitle?.toString(),
+                    artwork = artwork
+                )
+            )
+            if (metadata.artworkUri == null) updateTrackDetails(context, uri, forceReload = shouldReloadArtwork)
+        }
+    }
+
+    private fun clearNowPlayingTrack(advanceGeneration: Boolean) {
+        val current = _nowPlayingUiState.value
+        _nowPlayingUiState.value = current.copy(
+            current = null,
+            transitionGeneration = current.transitionGeneration + if (advanceGeneration) 1L else 0L,
+            position = PositionState()
+        )
+    }
+
+    /** Clears all previous-item payloads before publishing a different identity. */
+    private fun clearTrackBoundDetails() {
+        detailsGeneration++
+        metadataJob?.cancel()
+        metadataJob = null
+        diagnosticsJob?.cancel()
+        diagnosticsJob = null
+        _albumArt.value = null
+        _themeColor.value = android.graphics.Color.parseColor("#121212")
+        _lyrics.value = emptyList()
+        _audioInfo.value = ""
+        _bluetoothCodecInfo.value = ""
+        _diagnostics.value = PlaybackDiagnostics()
+        detailsUri = null
+        detailsSettled = false
+    }
+
+    private fun updateTrackDetails(context: Context, uri: Uri?, forceReload: Boolean = false) {
         if (uri == null) {
             detailsGeneration++
             metadataJob?.cancel()
@@ -512,7 +738,7 @@ class PlayerViewModel : ViewModel() {
         // onTracksChanged can fire more than once. Re-reading the file each time cancelled
         // and restarted the extraction, so skip while this track is already current or in
         // flight. A failed load leaves the state unsettled so a later re-announce retries.
-        if (uri == detailsUri && (detailsSettled || metadataJob?.isActive == true)) return
+        if (!forceReload && uri == detailsUri && (detailsSettled || metadataJob?.isActive == true)) return
         detailsUri = uri
         val requestGeneration = ++detailsGeneration
         detailsSettled = false
@@ -527,7 +753,21 @@ class PlayerViewModel : ViewModel() {
         _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
 
-        val extractor = metadataExtractor ?: return
+        val artworkIdentity = _nowPlayingUiState.value.current?.identity
+        val artworkTransitionGeneration = _nowPlayingUiState.value.transitionGeneration
+        if (forceReload || _nowPlayingUiState.value.current?.artwork == ArtworkState.Loading) {
+            setArtworkState(artworkIdentity, artworkTransitionGeneration, ArtworkState.Loading)
+        }
+
+        val extractor = metadataExtractor ?: run {
+            setArtworkState(
+                artworkIdentity,
+                artworkTransitionGeneration,
+                _nowPlayingUiState.value.current?.artwork as? ArtworkState.Available
+                    ?: ArtworkState.Unavailable
+            )
+            return
+        }
         val cachedMetadata = extractor.getCachedMetadata(uri)
         if (cachedMetadata != null) {
             _albumArt.value = cachedMetadata.albumArt
@@ -536,25 +776,79 @@ class PlayerViewModel : ViewModel() {
             _audioInfo.value = cachedMetadata.audioInfo
             _bluetoothCodecInfo.value = cachedMetadata.bluetoothCodecInfo
             detailsSettled = true
+            setArtworkState(
+                artworkIdentity,
+                artworkTransitionGeneration,
+                cachedMetadata.albumArt?.let {
+                    ArtworkState.Available(uri, detailsGeneration, ArtworkState.Available.Source.TRACK_CACHE)
+                }
+                    ?: (_nowPlayingUiState.value.current?.artwork as? ArtworkState.Available)
+                    ?: ArtworkState.Unavailable
+            )
         } else {
             metadataJob = viewModelScope.launch(Dispatchers.IO) {
-                val metadata = extractor.extractMetadata(uri)
+                val metadata = try {
+                    extractor.extractMetadata(uri)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
                 withContext(Dispatchers.Main) {
                     // A track can return to the same URI while an older read is still unwinding.
                     // Match both the URI and request generation before publishing its result.
-                    if (detailsUri == uri && detailsGeneration == requestGeneration) {
+                    if (detailsUri == uri && detailsGeneration == requestGeneration &&
+                        _nowPlayingUiState.value.current?.identity == artworkIdentity &&
+                        _nowPlayingUiState.value.transitionGeneration == artworkTransitionGeneration
+                    ) {
+                        if (metadata == null) {
+                            setArtworkState(
+                                artworkIdentity,
+                                artworkTransitionGeneration,
+                                _nowPlayingUiState.value.current?.artwork as? ArtworkState.Available
+                                    ?: ArtworkState.Unavailable
+                            )
+                            return@withContext
+                        }
                         _albumArt.value = metadata.albumArt
                         _themeColor.value = metadata.themeColor
                         _lyrics.value = metadata.lyrics
                         _audioInfo.value = metadata.audioInfo
                         _bluetoothCodecInfo.value = metadata.bluetoothCodecInfo
                         detailsSettled = true
+                        setArtworkState(
+                            artworkIdentity,
+                            artworkTransitionGeneration,
+                            metadata.albumArt?.let {
+                                ArtworkState.Available(uri, requestGeneration, ArtworkState.Available.Source.TRACK_CACHE)
+                            }
+                                ?: (_nowPlayingUiState.value.current?.artwork as? ArtworkState.Available)
+                                ?: ArtworkState.Unavailable
+                        )
                     }
                 }
             }
         }
 
-        refreshDiagnostics(uri, requestGeneration)
+        refreshDiagnostics(
+            uri,
+            requestGeneration,
+            artworkIdentity,
+            artworkTransitionGeneration
+        )
+    }
+
+    internal fun setArtworkState(
+        identity: TrackIdentity?,
+        transitionGeneration: Long,
+        artwork: ArtworkState
+    ) {
+        val state = _nowPlayingUiState.value
+        val current = state.current ?: return
+        if (identity == null || current.identity != identity ||
+            state.transitionGeneration != transitionGeneration
+        ) return
+        _nowPlayingUiState.value = state.copy(current = current.copy(artwork = artwork))
     }
 
     /**
@@ -564,7 +858,12 @@ class PlayerViewModel : ViewModel() {
      * `PlaybackDiagnosticsBus` and arrive from the playback service, so a capability refresh
      * can never overwrite a measurement.
      */
-    private fun refreshDiagnostics(uri: Uri, requestGeneration: Long) {
+    private fun refreshDiagnostics(
+        uri: Uri,
+        requestGeneration: Long,
+        trackIdentity: TrackIdentity?,
+        transitionGeneration: Long
+    ) {
         val probe = directPlaybackProbe
         val monitor = audioRouteMonitor
         val reader = audioSourceReader
@@ -592,7 +891,10 @@ class PlayerViewModel : ViewModel() {
             val capability = probe?.probe(source.sampleRateHz, source.channelCount)
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
             withContext(Dispatchers.Main) {
-                if (detailsUri != uri || detailsGeneration != requestGeneration) return@withContext
+                if (detailsUri != uri || detailsGeneration != requestGeneration ||
+                    _nowPlayingUiState.value.current?.identity != trackIdentity ||
+                    _nowPlayingUiState.value.transitionGeneration != transitionGeneration
+                ) return@withContext
                 _diagnostics.value = _diagnostics.value.copy(
                     source = source,
                     route = route,
@@ -611,6 +913,8 @@ class PlayerViewModel : ViewModel() {
     private fun onRouteChanged() {
         val uri = detailsUri ?: return
         val requestGeneration = detailsGeneration
+        val trackIdentity = _nowPlayingUiState.value.current?.identity
+        val transitionGeneration = _nowPlayingUiState.value.transitionGeneration
         val monitor = audioRouteMonitor ?: return
         val probe = directPlaybackProbe
         val source = _diagnostics.value.source
@@ -621,7 +925,10 @@ class PlayerViewModel : ViewModel() {
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
             withContext(Dispatchers.Main) {
                 // Do not resurrect a route for a track or request the user has already left.
-                if (detailsUri != uri || detailsGeneration != requestGeneration) return@withContext
+                if (detailsUri != uri || detailsGeneration != requestGeneration ||
+                    _nowPlayingUiState.value.current?.identity != trackIdentity ||
+                    _nowPlayingUiState.value.transitionGeneration != transitionGeneration
+                ) return@withContext
                 _diagnostics.value = _diagnostics.value.copy(route = route, capabilities = capability)
             }
         }
@@ -1047,20 +1354,39 @@ class PlayerViewModel : ViewModel() {
      * queue loss, and IDLE invalidate the value explicitly instead.
      */
     internal fun applyPlaybackProgress(positionMs: Long, durationMs: Long?) {
-        _currentPosition.value = positionMs.coerceAtLeast(0L)
+        val safePosition = positionMs.coerceAtLeast(0L)
+        _currentPosition.value = safePosition
         if (durationMs != null) {
             _duration.value = durationMs
         }
+        val state = _nowPlayingUiState.value
+        _nowPlayingUiState.value = state.copy(
+            position = state.position.copy(
+                positionMs = safePosition,
+                durationMs = durationMs ?: state.position.durationMs
+            )
+        )
     }
 
     /** Drops the resolved duration after the item that owned it is no longer current. */
     internal fun invalidatePlaybackDuration() {
         _duration.value = null
+        val state = _nowPlayingUiState.value
+        _nowPlayingUiState.value = state.copy(position = state.position.copy(durationMs = null))
+    }
+
+    internal fun applyPlaybackSeekability(seekable: Boolean) {
+        val state = _nowPlayingUiState.value
+        _nowPlayingUiState.value = state.copy(
+            position = state.position.copy(isSeekable = seekable)
+        )
     }
 
     /** IDLE or a removed queue means no item owns the current position or duration anymore. */
     internal fun onPlaybackIdle() {
         _currentPosition.value = 0L
+        val state = _nowPlayingUiState.value
+        _nowPlayingUiState.value = state.copy(position = state.position.copy(positionMs = 0L))
         invalidatePlaybackDuration()
     }
 
@@ -1071,7 +1397,10 @@ class PlayerViewModel : ViewModel() {
     internal fun handlePlaybackMediaItemTransition(
         context: Context,
         metadata: androidx.media3.common.MediaMetadata,
-        uri: Uri?
+        uri: Uri?,
+        mediaId: String = uri?.toString().orEmpty(),
+        artworkUri: Uri? = metadata.artworkUri,
+        album: String? = metadata.albumTitle?.toString()
     ) {
         if (uri == null) {
             _currentTrackName.value = "未再生"
@@ -1082,13 +1411,33 @@ class PlayerViewModel : ViewModel() {
         }
         _currentPosition.value = 0L
         invalidatePlaybackDuration()
-        updateTrackDetails(context, uri)
+        clearTrackBoundDetails()
+        val state = _nowPlayingUiState.value
+        _nowPlayingUiState.value = state.copy(
+            current = uri?.let {
+                CurrentTrack(
+                    identity = TrackIdentity(mediaId, it),
+                    title = metadata.title?.toString(),
+                    artist = metadata.artist?.toString(),
+                    album = album,
+                    artwork = artworkUri?.let {
+                        ArtworkState.Available(it, state.transitionGeneration + 1L)
+                    } ?: ArtworkState.Loading
+                )
+            },
+            transitionGeneration = state.transitionGeneration + 1L,
+            position = PositionState(),
+            playbackState = if (uri == null) PlaybackState.IDLE else state.playbackState
+        )
+        updateTrackDetails(context, uri, forceReload = true)
     }
 
     fun seekTo(pos: Long) {
         // An unresolved duration must not be seeked against: the request would clamp against an
         // arbitrary bound and the slider has nothing meaningful to map to yet.
-        val duration = _duration.value?.takeIf { it > 0L } ?: return
+        val position = _nowPlayingUiState.value.position
+        if (!position.isSeekable) return
+        val duration = position.durationMs?.takeIf { it > 0L } ?: return
         playbackController?.seekTo(pos.coerceIn(0L, duration))
     }
 

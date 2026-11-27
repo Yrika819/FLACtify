@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.flactify.viewmodel.PlayerViewModel
+import com.flactify.viewmodel.NowPlayingUiState
+import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.RecommendedTrack
 import com.flactify.viewmodel.TrackData
 import com.flactify.viewmodel.Playlist
@@ -138,7 +140,6 @@ fun LibraryScreen(
     val scanCompleted by viewModel.scanCompleted.collectAsState()
     val scanCurrentFile by viewModel.scanCurrentFile.collectAsState()
     val scanFailures by viewModel.scanFailures.collectAsState()
-    val currentAlbumArt by viewModel.albumArt.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val recommendations by viewModel.recommendations.collectAsState()
@@ -146,8 +147,17 @@ fun LibraryScreen(
     val recommendationError by viewModel.recommendationError.collectAsState()
     val lastRecommendationUpdate by viewModel.lastRecommendationUpdate.collectAsState()
 
-    val isShuffleMode by viewModel.isShuffleMode.collectAsState()
-    val repeatMode by viewModel.repeatMode.collectAsState()
+    val nowPlaying by viewModel.nowPlayingContentState.collectAsState(initial = NowPlayingUiState())
+    val nowPlayingArtwork = nowPlaying.current?.artwork as? ArtworkState.Available
+    val cachedNowPlayingArt by viewModel.albumArt.collectAsState()
+    val currentAlbumArt = cachedNowPlayingArt.takeIf {
+        nowPlayingArtwork?.source == ArtworkState.Available.Source.TRACK_CACHE
+    }
+    val nowPlayingArtworkUri = nowPlayingArtwork?.artworkUri?.takeIf {
+        nowPlayingArtwork?.source == ArtworkState.Available.Source.MEDIA3
+    }
+    val isShuffleMode = nowPlaying.shuffleEnabled
+    val repeatMode = nowPlaying.repeatMode
 
     var selectedTab by rememberSaveable { mutableStateOf("artists") }
     var selectedArtist by rememberSaveable { mutableStateOf<String?>(null) }
@@ -229,11 +239,28 @@ fun LibraryScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (currentAlbumArt != null) {
+        if (currentAlbumArt != null || nowPlayingArtworkUri != null) {
+            if (currentAlbumArt != null) {
             Image(
                 bitmap = currentAlbumArt!!.asImageBitmap(), contentDescription = null,
                 modifier = Modifier.fillMaxSize().blur(50.dp), contentScale = ContentScale.Crop, alpha = 0.6f
             )
+            } else {
+                AsyncImage(
+                    model = nowPlayingArtworkUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().blur(50.dp),
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.6f,
+                    onError = {
+                        viewModel.setArtworkState(
+                            nowPlaying.current?.identity,
+                            nowPlaying.transitionGeneration,
+                            ArtworkState.Unavailable
+                        )
+                    }
+                )
+            }
             Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color(0x77121212), Color(0x99121212), Color(0xDD121212)))))
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color(0xFF121212)))

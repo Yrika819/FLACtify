@@ -28,9 +28,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.flactify.audio.PcmEncoding
 import com.flactify.audio.PlaybackDiagnostics
 import com.flactify.viewmodel.PlayerViewModel
+import com.flactify.viewmodel.NowPlayingUiState
+import com.flactify.viewmodel.PositionState
+import com.flactify.viewmodel.ArtworkState
 import androidx.media3.common.Player
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -41,16 +45,18 @@ fun PlayerScreen(
     onOpenLibrary: () -> Unit,
     onOpenSettings: () -> Unit = {}
 ) {
-    val isPlaying by viewModel.isPlaying.collectAsState()
-    val currentTrackName by viewModel.currentTrackName.collectAsState()
-    val currentArtist by viewModel.currentArtist.collectAsState()
-    val albumArt by viewModel.albumArt.collectAsState()
-    val currentLyrics by viewModel.currentLyrics.collectAsState()
+    val nowPlaying by viewModel.nowPlayingContentState.collectAsState(initial = NowPlayingUiState())
+    val isPlaying = nowPlaying.isPlaying
+    val currentTrackName = nowPlaying.current?.title?.takeIf { it.isNotBlank() }
+        ?: if (nowPlaying.current == null) "未再生" else "不明"
+    val currentArtist = nowPlaying.current?.artist?.takeIf { it.isNotBlank() } ?: "不明なアーティスト"
+    val artwork = nowPlaying.current?.artwork as? ArtworkState.Available
+    val cachedAlbumArt by viewModel.albumArt.collectAsState()
+    val albumArt = cachedAlbumArt.takeIf { artwork?.source == ArtworkState.Available.Source.TRACK_CACHE }
+    val artworkUri = artwork?.artworkUri?.takeIf { artwork?.source == ArtworkState.Available.Source.MEDIA3 }
     val lyrics by viewModel.lyrics.collectAsState()
-    val currentPosition by viewModel.currentPosition.collectAsState()
-    val duration by viewModel.duration.collectAsState()
-    val isShuffleMode by viewModel.isShuffleMode.collectAsState()
-    val repeatMode by viewModel.repeatMode.collectAsState()
+    val isShuffleMode = nowPlaying.shuffleEnabled
+    val repeatMode = nowPlaying.repeatMode
     val audioInfo by viewModel.audioInfo.collectAsState()
     val bluetoothCodecInfo by viewModel.bluetoothCodecInfo.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
@@ -80,7 +86,8 @@ fun PlayerScreen(
                 )
             }
     ) {
-        if (albumArt != null) {
+        if (albumArt != null || artworkUri != null) {
+            if (albumArt != null) {
             Image(
                 bitmap = albumArt!!.asImageBitmap(),
                 contentDescription = null,
@@ -89,6 +96,21 @@ fun PlayerScreen(
                     .blur(40.dp),
                 contentScale = ContentScale.Crop
             )
+            } else {
+                AsyncImage(
+                    model = artworkUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().blur(40.dp),
+                    contentScale = ContentScale.Crop,
+                    onError = {
+                        viewModel.setArtworkState(
+                            nowPlaying.current?.identity,
+                            nowPlaying.transitionGeneration,
+                            ArtworkState.Unavailable
+                        )
+                    }
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -190,17 +212,29 @@ fun PlayerScreen(
                                 Text("フォルダを選択", color = Color.White)
                             }
                         }
-                    } else if (albumArt != null) {
+                    } else if (albumArt != null || artworkUri != null) {
                         Card(
                             modifier = Modifier.size(artworkSize),
                             shape = RoundedCornerShape(12.dp),
                             elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
                         ) {
-                            Image(
+                            if (albumArt != null) Image(
                                 bitmap = albumArt!!.asImageBitmap(),
                                 contentDescription = "アルバムアート",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
+                            ) else AsyncImage(
+                                model = artworkUri,
+                                contentDescription = "アルバムアート",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                                onError = {
+                                    viewModel.setArtworkState(
+                                        nowPlaying.current?.identity,
+                                        nowPlaying.transitionGeneration,
+                                        ArtworkState.Unavailable
+                                    )
+                                }
                             )
                         }
                     } else {
@@ -317,24 +351,7 @@ fun PlayerScreen(
                             .height(44.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
-                        if (currentLyrics.isNotEmpty()) {
-                            Text(
-                                text = currentLyrics,
-                                color = Color(0xFF1DB954),
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.clickable { showLyricsSheet = true }
-                            )
-                        } else if (lyrics.isNotEmpty()) {
-                            Text(
-                                text = "歌詞を表示",
-                                color = Color(0x99FFFFFF),
-                                fontSize = 13.sp,
-                                modifier = Modifier.clickable { showLyricsSheet = true }
-                            )
-                        }
+                        CurrentLyricLabel(viewModel, lyrics.isNotEmpty()) { showLyricsSheet = true }
                     }
 
                         }
@@ -345,38 +362,7 @@ fun PlayerScreen(
                             .fillMaxWidth()
                             .padding(bottom = 60.dp)
                     ) {
-                        // シークバー
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                        // duration が未確定（null）の間はシークさせない。0 は「長さ0の曲」と
-                        // して扱い、未確定とは区別する。
-                        val seekableDuration = duration?.takeIf { it > 0L }
-                        Slider(
-                            value = if (seekableDuration != null) {
-                                (currentPosition.toFloat() / seekableDuration).coerceIn(0f, 1f)
-                            } else 0f,
-                            onValueChange = { fraction ->
-                                seekableDuration?.let { viewModel.seekTo((fraction * it).toLong()) }
-                            },
-                            enabled = seekableDuration != null,
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color.White,
-                                activeTrackColor = Color.White,
-                                inactiveTrackColor = Color(0x40FFFFFF)
-                            ),
-                            modifier = Modifier.height(20.dp)
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(text = formatTime(currentPosition), color = Color(0xBBFFFFFF), fontSize = 12.sp)
-                            Text(
-                                text = duration?.let(::formatTime) ?: "--:--",
-                                color = Color(0xBBFFFFFF),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
+                        PlayerProgress(viewModel)
 
                     // 操作ボタン
                     Row(
@@ -456,43 +442,112 @@ fun PlayerScreen(
         }
 
         if (showLyricsSheet) {
-            val activeLyricIndex = lyrics.indexOfLast { it.first <= currentPosition }
-            val lyricsListState = rememberLazyListState()
+            LyricsBottomSheet(viewModel, lyrics) { showLyricsSheet = false }
+        }
+    }
+}
 
-            LaunchedEffect(activeLyricIndex) {
-                if (activeLyricIndex >= 0 && activeLyricIndex < lyrics.size) {
-                    lyricsListState.animateScrollToItem(activeLyricIndex)
-                }
-            }
+@Composable
+private fun PlayerProgress(viewModel: PlayerViewModel) {
+    val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
+    val seekableDuration = position.durationMs?.takeIf { position.isSeekable && it > 0L }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Slider(
+            value = if (seekableDuration != null) {
+                (position.positionMs.toFloat() / seekableDuration).coerceIn(0f, 1f)
+            } else 0f,
+            onValueChange = { fraction ->
+                seekableDuration?.let { viewModel.seekTo((fraction * it).toLong()) }
+            },
+            enabled = seekableDuration != null,
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color(0x40FFFFFF)
+            ),
+            modifier = Modifier.height(20.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = formatTime(position.positionMs), color = Color(0xBBFFFFFF), fontSize = 12.sp)
+            Text(
+                text = position.durationMs?.let(::formatTime) ?: "--:--",
+                color = Color(0xBBFFFFFF),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
 
-            ModalBottomSheet(
-                onDismissRequest = { showLyricsSheet = false },
-                containerColor = Color(0xFF1A1A1A)
+@Composable
+private fun CurrentLyricLabel(
+    viewModel: PlayerViewModel,
+    hasLyrics: Boolean,
+    onOpenLyrics: () -> Unit
+) {
+    val currentLyrics by viewModel.currentLyrics.collectAsState()
+    if (currentLyrics.isNotEmpty()) {
+        Text(
+            text = currentLyrics,
+            color = Color(0xFF1DB954),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.clickable(onClick = onOpenLyrics)
+        )
+    } else if (hasLyrics) {
+        Text(
+            text = "歌詞を表示",
+            color = Color(0x99FFFFFF),
+            fontSize = 13.sp,
+            modifier = Modifier.clickable(onClick = onOpenLyrics)
+        )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun LyricsBottomSheet(
+    viewModel: PlayerViewModel,
+    lyrics: List<Pair<Long, String>>,
+    onDismiss: () -> Unit
+) {
+    val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
+    val activeLyricIndex = lyrics.indexOfLast { it.first <= position.positionMs }
+    val lyricsListState = rememberLazyListState()
+
+    LaunchedEffect(activeLyricIndex) {
+        if (activeLyricIndex >= 0 && activeLyricIndex < lyrics.size) {
+            lyricsListState.animateScrollToItem(activeLyricIndex)
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF1A1A1A)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+                .padding(horizontal = 20.dp)
+        ) {
+            Text("歌詞", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(12.dp))
+            LazyColumn(
+                state = lyricsListState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight(0.8f)
-                        .padding(horizontal = 20.dp)
-                ) {
-                    Text("歌詞", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    LazyColumn(
-                        state = lyricsListState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 32.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        itemsIndexed(lyrics) { index, (_, line) ->
-                            Text(
-                                text = line,
-                                color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
-                                fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
-                                fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
+                itemsIndexed(lyrics) { index, (_, line) ->
+                    Text(
+                        text = line,
+                        color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
+                        fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
+                        fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
