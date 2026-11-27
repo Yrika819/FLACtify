@@ -249,11 +249,15 @@ class PlayerViewModelNowPlayingStateTest {
             .setAlbumTitle("fresh album").setArtworkUri(uri("content://art/fresh")).build()
         try {
             viewModel.handleCurrentMediaItemChanged(mockk(relaxed = true), item, false, notified)
+            viewModel.applyPlaybackState(PlaybackState.ERROR)
+            viewModel.handleCurrentMediaItemChanged(mockk(relaxed = true), item, false, notified)
 
             val track = viewModel.nowPlayingUiState.value.current!!
             assertEquals("fresh title", track.title)
             assertEquals("fresh artist", track.artist)
             assertEquals("fresh album", track.album)
+            assertEquals("fresh title", viewModel.currentTrackName.value)
+            assertEquals(PlaybackState.ERROR, viewModel.nowPlayingUiState.value.playbackState)
             val artUri = uri("content://art/fresh")
             viewModel.setArtworkState(
                 track.identity,

@@ -43,7 +43,7 @@ pending; cloud tests do not count as device evidence.
 ## Cloud build and handoff
 
 Build `assembleFoundationClosure` and the unit-test suite in Codex Cloud with the retained SDK,
-Gradle, Steam Audio, and dependency caches. Keep the unsigned-for-release debug test APK out of
+Gradle, Steam Audio, and dependency caches. Keep the debug-key-signed test APK out of
 the repository and Actions artifacts. Before handoff, calculate SHA-256 and size, transfer the
 APK plus synthetic fixtures only through the authenticated private task file handoff, and verify
 the digest again on the Mac before using `adb install`. Do not copy signing keys or secrets.

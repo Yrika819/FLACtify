@@ -588,7 +588,7 @@ class PlayerViewModel : ViewModel() {
                 ?: previous.position.durationMs.takeIf { sameTrack }
         } else null
         val metadata = mediaController.mediaMetadata
-        val track = if (identity != null && metadata != null) {
+        val track = if (identity != null) {
             val oldTrack = previous.current?.takeIf { sameTrack }
             CurrentTrack(
                 identity = identity,
@@ -625,7 +625,6 @@ class PlayerViewModel : ViewModel() {
         if (reconnecting && identity != null && identity == previous.current?.identity) {
             context?.let { updateTrackDetails(it, uri) }
         }
-        _repeatMode.value = mediaController.repeatMode
         _currentTrackName.value = track?.title?.takeIf { it.isNotBlank() }
             ?: if (track == null) "未再生" else "不明"
         _currentArtist.value = track?.artist?.takeIf { it.isNotBlank() } ?: ""
@@ -670,14 +669,15 @@ class PlayerViewModel : ViewModel() {
             val track = current.current ?: return
             _currentTrackName.value = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "不明"
             _currentArtist.value = metadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: "不明なアーティスト"
+            val cachedArtwork = track.artwork as? ArtworkState.Available
+            val shouldReloadArtwork = metadata.artworkUri == null &&
+                cachedArtwork?.source != ArtworkState.Available.Source.TRACK_CACHE &&
+                track.artwork != ArtworkState.Unavailable
             val artwork = metadata.artworkUri?.let {
                 ArtworkState.Available(it, current.transitionGeneration)
-            } ?: if (track.artwork is ArtworkState.Available &&
-                track.artwork.source == ArtworkState.Available.Source.TRACK_CACHE) {
-                track.artwork
-            } else {
-                ArtworkState.Loading
-            }
+            } ?: cachedArtwork?.takeIf { it.source == ArtworkState.Available.Source.TRACK_CACHE }
+                ?: if (track.artwork == ArtworkState.Unavailable) ArtworkState.Unavailable
+                else ArtworkState.Loading
             _nowPlayingUiState.value = current.copy(
                 current = track.copy(
                     title = metadata.title?.toString(),
@@ -686,7 +686,7 @@ class PlayerViewModel : ViewModel() {
                     artwork = artwork
                 )
             )
-            if (metadata.artworkUri == null) updateTrackDetails(context, uri)
+            if (metadata.artworkUri == null) updateTrackDetails(context, uri, forceReload = shouldReloadArtwork)
         }
     }
 
