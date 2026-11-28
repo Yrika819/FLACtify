@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.TagRecoveryManager
 import com.flactify.audio.ReplayGainSelection
+import com.flactify.PlaybackSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,6 +43,14 @@ fun SettingsScreen(
     val isChangingSpatialAudioMode by viewModel.isChangingSpatialAudioMode.collectAsState()
     val spatialAudioModeError by viewModel.spatialAudioModeError.collectAsState()
     val replayGainPreferences by viewModel.replayGainPreferences.collectAsState()
+    val isScanning by viewModel.isScanningArtists.collectAsState()
+    val scanCompleted by viewModel.scanCompleted.collectAsState()
+    val scanTotal by viewModel.scanTotal.collectAsState()
+    val scanFailures by viewModel.scanFailures.collectAsState()
+    val hasSelectedLibrary = remember(context) {
+        context.getSharedPreferences(PlaybackSettings.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
+            .getString("last_uri", null) != null
+    }
     var hrtfMixDraft by remember(
         spatialHrtfMixPercent,
         isChangingSpatialAudioMode,
@@ -151,6 +160,41 @@ fun SettingsScreen(
                                 checkedTrackColor = Color(0xFF1DB954)
                             )
                         )
+                    }
+                }
+            }
+
+            item {
+                SettingsSectionHeader("ライブラリ")
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E1E1E)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "提供元の更新時刻やファイルサイズで見つからない変更を確認できます。全曲のメタデータを読み直します。",
+                            color = Color(0xCCFFFFFF), fontSize = 12.sp, lineHeight = 18.sp
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.fullRescanCurrentLibrary(context) },
+                            enabled = hasSelectedLibrary && !isScanning
+                        ) {
+                            Text(if (isScanning) "全件を再スキャン中…" else "ライブラリを完全再スキャン")
+                        }
+                        if (isScanning && scanTotal > 0) {
+                            LinearProgressIndicator(
+                                progress = { scanCompleted.toFloat() / scanTotal.coerceAtLeast(1) },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF1DB954)
+                            )
+                        }
+                        if (scanFailures.isNotEmpty()) {
+                            Text(
+                                "一部のファイルを読み取れませんでした: ${scanFailures.size}件",
+                                color = Color(0xFFFFB74D), fontSize = 12.sp
+                            )
+                        }
                     }
                 }
             }

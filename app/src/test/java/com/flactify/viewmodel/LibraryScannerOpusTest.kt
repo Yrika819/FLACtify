@@ -231,6 +231,38 @@ class LibraryScannerOpusTest {
     }
 
     @Test
+    fun `full rescan ignores a valid cache entry for the same timestamp and size`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val tempDir = kotlin.io.path.createTempDirectory("full-rescan").toFile()
+        val folderUri = uriFor("full-rescan-music")
+        val bytes = File("src/test/resources/audio/opus_untagged.opus").readBytes()
+        every { context.contentResolver } returns resolver
+        every { context.cacheDir } returns tempDir
+        val root = mockk<DocumentFile>()
+        val trackFile = document("rescan.opus", bytes, 100L, resolver)
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(trackFile)
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+        try {
+            val scanner = LibraryScanner(null)
+            val initial = scanner.scan(context, folderUri, cachedTracks = emptyList(), persistIfCurrent = {})
+            assertTrue(initial.scanSucceeded)
+            verify(exactly = 1) { resolver.openInputStream(trackFile.uri) }
+
+            val refreshed = scanner.fullRescan(context, folderUri, persistIfCurrent = {})
+            assertTrue(refreshed.scanSucceeded)
+            assertEquals(initial.tracks.map { it.uri }, refreshed.tracks.map { it.uri })
+            verify(exactly = 2) { resolver.openInputStream(trackFile.uri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `legacy cache without size or format hint remains readable`() = runBlocking {
         val context = mockk<Context>(relaxed = true)
         val resolver = mockk<ContentResolver>(relaxed = true)

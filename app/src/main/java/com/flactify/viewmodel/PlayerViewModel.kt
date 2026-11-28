@@ -1075,6 +1075,60 @@ class PlayerViewModel : ViewModel() {
         }
     }
 
+    /** Forces metadata and format validation for every document in the currently selected tree. */
+    fun fullRescanCurrentLibrary(context: Context) {
+        val uri = sharedPreferences?.getString("last_uri", null)?.let(Uri::parse) ?: return
+        validateJob?.cancel()
+        validateJob = null
+        scanJob?.cancel()
+        val generation = nextLibraryGeneration()
+        scanJob = viewModelScope.launch {
+            if (!beginScanForGeneration(generation)) return@launch
+            try {
+                val appContext = context.applicationContext
+                val result = scanner().fullRescan(
+                    appContext,
+                    uri,
+                    onProgress = { progress ->
+                        synchronized(libraryCommitLock) {
+                            if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                        }
+                    },
+                    shouldPersist = { isCurrentLibraryGeneration(generation) },
+                    persistIfCurrent = { tracksToSave ->
+                        saveCacheIfCurrent(appContext, uri, generation, tracksToSave)
+                    }
+                )
+                if (libraryGeneration.get() != generation) return@launch
+                if (!result.scanSucceeded) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            _scanFailures.value = result.failedFiles.ifEmpty {
+                                listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
+                            }
+                        }
+                    }
+                    return@launch
+                }
+                val tracks = result.tracks
+                val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
+                withContext(Dispatchers.Main) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            publishLibraryGroups(groups)
+                            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+                            _preloadedCache.complete(currentCacheSnapshot)
+                            _scanFailures.value = result.failedFiles
+                            _isReady.value = true
+                        }
+                    }
+                }
+            } finally {
+                endScanIndicator()
+            }
+        }
+    }
+
     /**
      * The folder-switch body, extracted so it can be driven deterministically from tests without a
      * leaked [viewModelScope] coroutine (which leaves an active SupervisorJob that [runTest] waits
