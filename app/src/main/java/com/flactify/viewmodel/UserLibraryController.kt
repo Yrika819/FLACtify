@@ -38,4 +38,8 @@ class UserLibraryController internal constructor(
     fun getAllStats(): Map<String, LibraryManager.PlayStats> = libraryManager.getAllStats()
 
     fun getStatsFor(uri: String): LibraryManager.PlayStats = libraryManager.getStatsFor(uri)
+
+    fun createBackup(): String = libraryManager.createBackup()
+
+    fun restoreBackup(json: String): Boolean = libraryManager.restoreBackup(json)
 }

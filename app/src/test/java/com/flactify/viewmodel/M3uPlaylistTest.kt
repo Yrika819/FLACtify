@@ -63,4 +63,18 @@ class M3uPlaylistTest {
         assertTrue(badLocation.isFailure)
         assertTrue(badTitle.isFailure)
     }
+
+    @Test
+    fun `oversized documents are rejected and serializer stops at the document limit`() {
+        val oversized = M3uPlaylistCodec.parse("x".repeat(8 * 1024 * 1024 + 1))
+        assertTrue(oversized.entries.isEmpty())
+        assertTrue(oversized.warnings.single().contains("character limit"))
+
+        val tooLargeToWrite = runCatching {
+            M3uPlaylistCodec.serialize(
+                M3uPlaylist(listOf(M3uEntry("x".repeat(8 * 1024 * 1024))))
+            )
+        }
+        assertTrue(tooLargeToWrite.isFailure)
+    }
 }

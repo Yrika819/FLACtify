@@ -122,6 +122,33 @@ class LibraryManager(context: Context) {
         return getAllStats()[uri] ?: PlayStats()
     }
 
+    /** Creates a user-data-only backup; no audio or cached artwork bytes are included. */
+    fun createBackup(): String = LibraryBackupCodec.encode(
+        LibraryBackup(
+            favorites = getFavorites(),
+            playlists = getPlaylists(),
+            stats = getAllStats()
+        )
+    )
+
+    /**
+     * Validates the entire backup before replacing preference state. SharedPreferences applies
+     * these values in one editor transaction; malformed or unsupported backups leave data intact.
+     */
+    fun restoreBackup(json: String): Boolean {
+        val backup = LibraryBackupCodec.decode(json) ?: return false
+        val restored = favPrefs.edit()
+            .putStringSet("favorites", backup.favorites)
+            .putString("playlists", LibraryBackupCodec.encodePlaylists(backup.playlists))
+            .putString("stats", LibraryBackupCodec.encodeStats(backup.stats))
+            .commit()
+        if (restored) {
+            playlistsCanBeRewritten = true
+            statsCanBeRewritten = true
+        }
+        return restored
+    }
+
     private fun saveAllStats(stats: Map<String, PlayStats>) {
         if (!statsCanBeRewritten) return
         val root = JSONObject()

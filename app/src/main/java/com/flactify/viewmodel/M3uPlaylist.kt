@@ -26,8 +26,12 @@ data class M3uPlaylist(
 object M3uPlaylistCodec {
     private const val MAX_ENTRIES = 10_000
     private const val MAX_LINE_LENGTH = 8 * 1024
+    private const val MAX_DOCUMENT_CHARS = 8 * 1024 * 1024
 
     fun parse(text: String, baseDirectory: String? = null): M3uPlaylist {
+        if (text.length > MAX_DOCUMENT_CHARS) {
+            return M3uPlaylist(emptyList(), listOf("Playlist exceeds the $MAX_DOCUMENT_CHARS character limit"))
+        }
         val base = baseDirectory?.let(::File)
         val entries = ArrayList<M3uEntry>()
         val warnings = ArrayList<String>()
@@ -72,21 +76,30 @@ object M3uPlaylistCodec {
         return M3uPlaylist(entries = entries, warnings = warnings)
     }
 
-    fun serialize(playlist: M3uPlaylist): String = buildString {
-        append("#EXTM3U\n")
+    fun serialize(playlist: M3uPlaylist): String {
+        require(playlist.entries.size <= MAX_ENTRIES) { "Playlist exceeds the $MAX_ENTRIES entry limit" }
+        val output = StringBuilder()
+        appendBounded(output, "#EXTM3U\n")
         playlist.entries.forEach { entry ->
             requireSafeLine(entry.location, "location")
             entry.title?.let { requireSafeLine(it, "title") }
             require(entry.location.isNotBlank()) { "M3U location must not be blank" }
             if (entry.title != null || entry.durationSeconds != null) {
-                append("#EXTINF:")
-                    .append(entry.durationSeconds ?: -1)
-                    .append(',')
-                    .append(entry.title.orEmpty())
-                    .append('\n')
+                appendBounded(
+                    output,
+                    "#EXTINF:${entry.durationSeconds ?: -1},${entry.title.orEmpty()}\n"
+                )
             }
-            append(entry.location).append('\n')
+            appendBounded(output, "${entry.location}\n")
         }
+        return output.toString()
+    }
+
+    private fun appendBounded(output: StringBuilder, value: String) {
+        require(value.length <= MAX_DOCUMENT_CHARS - output.length) {
+            "Playlist exceeds the $MAX_DOCUMENT_CHARS character limit"
+        }
+        output.append(value)
     }
 
     private fun parseExtInf(value: String, lineNumber: Int, warnings: MutableList<String>): PendingExtInf? {
