@@ -3,27 +3,29 @@
 This changelog records project releases and notable changes. FLACtify 2.5.2 is a
 personal-use release; it was not published for general public distribution.
 
-## Unreleased — 3.0.0 candidate (Owner approval pending; not released)
+## 3.0.0 — 2026-11-28 (personal-use stable release)
 
-- Candidate identity: `com.flactify`, versionName `3.0.0`, versionCode `18`.
-- Draft PR #37 is the sole cumulative integration candidate. Code source HEAD/tree:
-  `4592291a08a62dd923509d369df3b224c4b5afb3` /
+- Release identity: `com.flactify`, versionName `3.0.0`, versionCode `18`.
+- Integrated through PR #37 using normal merge commit `6272f8357c4709587e3b793faa5aaad7a7b859fb`.
+  The merge tree `2ab3d24b55986aba17c8abef2c35cf712437dc89` exactly matches the approved PR tree.
+  Product APK source HEAD/tree: `4592291a08a62dd923509d369df3b224c4b5afb3` /
   `a9c9ed0df88f8831f24dd7b79650accd25c64232`.
-- Fixed the P0 play-statistics restore mismatch by separating internal `pc/sc/lp`
-  persistence from backup `playCount/skipCount/lastPlayed` exchange data. Owner verified the
-  fix on device and the blocker is cleared. See
-  [`docs/release/release-readiness-v3.0.0.md`](docs/release/release-readiness-v3.0.0.md).
-- Owner-reported evaluation: Phase 9A 8/8, 9B 8/8, 9C 21/21, and 10A-R2 9/9 PASS
-  (46/46 aggregate). This does not mean all SharedPreferences instrumentation tests ran;
-  those tests compiled but were not executed.
-- Required GitHub CI and independent review passed for the candidate. Gate 3 paused-retention
-  remains an unresolved conditional risk.
-- Owner-only artifacts: FoundationClosure SHA-256
-  `f3c8a9ce7aa674be1f8a7c5d4d29fcf15b76f0b258910a7d5bf9139560f68a9e`; unsigned production
-  Release APK SHA-256
-  `f97b866c7e7e7f173e74242affc2a1b09ee244c1b6e676e3e5b9e76ddbd1b17d`.
-- No merge, signing, production install, tag, GitHub Release, or public distribution has
-  occurred. Owner release approval is pending.
+- Fixed the P0 play-statistics restore mismatch by separating internal `pc/sc/lp` persistence
+  from backup `playCount/skipCount/lastPlayed` exchange data. Existing v2.5.2 and backup
+  formats remain supported; malformed/missing/conflicting rows are preserved without guessing.
+- Owner-reported device evaluations: Phase 9A 8/8, 9B 8/8, 9C 21/21, 10A-R2 9/9, and
+  10C 10/10 PASS (56/56 aggregate). Phase 10C confirms the production update from 2.5.2,
+  retention of existing data and permissions, and the listed core playback flows. See
+  [`docs/release/owner-device-evaluation.md`](docs/release/owner-device-evaluation.md).
+- Required PR CI and post-merge Android validation, CodeQL, and fresh-extraction checks passed.
+  LGPL relink passed in the final PR CI.
+- Gate 3 reconnect paused-retention remains an unresolved conditional risk. SharedPreferences
+  instrumentation was compiled but not executed; Android quantitative performance metrics
+  remain unmeasured.
+- Distribution is limited to Owner-authorized personal use. No GitHub Release or general APK/AAB
+  publication was made. The Owner-only Drive contains the signed production APK, but no Mac-side
+  measurement report with its SHA-256/certificate fingerprint was available in the repository or
+  searched Drive records; those values are intentionally omitted here.
 
 ## 2.5.2 — 2026-11-28
 

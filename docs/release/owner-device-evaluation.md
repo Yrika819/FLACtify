@@ -1,4 +1,4 @@
-# Owner実機評価記録 — Phase 9A〜10A-R2
+# Owner実機評価記録 — Phase 9A〜10C
 
 ## 受理した結果
 
@@ -8,9 +8,29 @@
 | Phase 9B | 8/8 PASS | Owner実機評価 |
 | Phase 9C | 21/21 PASS | Owner実機評価 |
 | Phase 10A-R2 | 9/9 PASS | Owner実機評価 |
-| 合計 | 46/46 PASS | Owner報告の延べ合算 |
+| Phase 10C | 10/10 PASS | Owner本番実機評価 |
+| 合計 | 56/56 PASS | Owner報告の延べ合算 |
 
-Owner判断により、Phase 10A-R2で統計復元P0の修正が確認され、release blockerから解除されました。各phaseの個別チェック詳細、Phase 10A-R2のAPK hashや端末情報はこの判断メッセージにないため、推測で補完しません。
+Owner判断によりPhase 10A-R2で統計復元P0の修正が確認され、release blockerから解除されました。Phase 10Cでは本番上書き更新、既存データ保持、主要機能の正常動作が10/10 PASSと報告されました。Phase 10Cの個別APK hash、証明書fingerprint、端末情報を含むMac側実測報告は確認できていないため、これらの値は推測で補完・記録しません。
+
+## Phase 10C Owner確認項目
+
+Owner報告の10/10 PASSに含まれる結果は次のとおりです。
+
+| 項目 | Owner結果 |
+| --- | --- |
+| v2.5.2からの本番上書き更新 | PASS |
+| ライブラリ保持 | PASS |
+| SAF権限保持 | PASS |
+| お気に入り・プレイリスト保持 | PASS |
+| 再生統計保持 | PASS |
+| 設定保持 | PASS |
+| 再生操作 | PASS |
+| ミニプレイヤー・動的配色 | PASS |
+| バックグラウンド再生 | PASS |
+| 再起動後の正常動作 | PASS |
+
+詳細なログ、APK hash、証明書fingerprint、各項目の追加内訳はOwner報告に含まれていないため、本書で推測していません。Owner限定Driveには`FLACtify-v3.0.0-prod-18-signed.apk`がありますが、Mac側実測報告を確認できなかったため、signed APKのSHA-256や証明書情報は記録しません。
 
 ## 対象と識別情報
 
