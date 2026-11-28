@@ -79,7 +79,13 @@ data class TrackData(
     val originalIndex: Int,
     val uri: Uri,
     val albumArtBytes: ByteArray? = null,
-    val lastModified: Long = 0L
+    val lastModified: Long = 0L,
+    /**
+     * Content-detected container used to restore Media3's MIME hint without reopening an
+     * unchanged SAF document. This is a cache hint rather than user-facing track metadata, so it
+     * intentionally does not participate in value equality.
+     */
+    val formatExtension: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

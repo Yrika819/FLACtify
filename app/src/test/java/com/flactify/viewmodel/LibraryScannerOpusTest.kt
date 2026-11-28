@@ -8,6 +8,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -136,6 +137,50 @@ class LibraryScannerOpusTest {
         } finally {
             unmockkStatic(DocumentFile::class)
             tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `unchanged cached format does not reopen SAF provider`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val folderUri = uriFor("cached-format-music")
+        val cachedUri = uriFor("renamed-opus.bin")
+        val root = mockk<DocumentFile>()
+        val document = mockk<DocumentFile>()
+        every { context.contentResolver } returns resolver
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(document)
+        every { document.isDirectory } returns false
+        every { document.name } returns "renamed-opus.bin"
+        every { document.uri } returns cachedUri
+        every { document.lastModified() } returns 200L
+        every { resolver.openInputStream(cachedUri) } throws IOException("must not read unchanged cache")
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+
+        val cached = TrackData(
+            title = "Cached Opus",
+            artist = "Synthetic artist",
+            originalIndex = 0,
+            uri = cachedUri,
+            lastModified = 200L,
+            formatExtension = "opus"
+        )
+        try {
+            val result = LibraryScanner(null).scan(
+                context = context,
+                folderUri = folderUri,
+                cachedTracks = listOf(cached),
+                persistIfCurrent = {}
+            )
+
+            assertTrue(result.scanSucceeded)
+            assertEquals(listOf("Cached Opus"), result.tracks.map { it.title })
+            verify(exactly = 0) { resolver.openInputStream(cachedUri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
         }
     }
 

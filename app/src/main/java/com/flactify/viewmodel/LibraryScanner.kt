@@ -91,6 +91,7 @@ class LibraryScanner(
         val failedFiles = mutableListOf<String>()
         val cachedMap = cachedTracks.associateBy { it.uri.toString() }
         var hasChanges = false
+        var cacheNeedsWrite = false
 
         for ((index, file) in files.withIndex()) {
             ensureActive()
@@ -125,8 +126,21 @@ class LibraryScanner(
             }
             onProgress(LibraryScanProgress(files.size, index, fileName, failedFiles.toList()))
 
+            // The detected container is persisted with each cached track. On a validation scan,
+            // an unchanged document can therefore be reused without reopening the provider just
+            // to sniff its first bytes. A missing hint is deliberately a cache miss: older cache
+            // files and hand-built callers still receive the content-based detection path below.
+            if (cached != null && isTimestampFresh(cached.lastModified, fileLastMod) &&
+                cached.formatExtension?.let(::isSupportedFormatExtension) == true
+            ) {
+                metadataExtractor?.fileExtensionCache?.set(file.uri, cached.formatExtension)
+                newParsedTracks.add(cached.copy(originalIndex = index))
+                continue
+            }
+
             // Sniff even cache hits: a renamed container must get the same Media3 MIME hint
-            // and audio-quality label as a correctly suffixed file.
+            // and audio-quality label as a correctly suffixed file. This is also the migration
+            // path for cache entries written before formatExtension was persisted.
             val detectedExt = try {
                 val stream = context.contentResolver.openInputStream(file.uri)
                     ?: throw java.io.IOException("Unable to open audio document for format detection")
@@ -149,7 +163,9 @@ class LibraryScanner(
             metadataExtractor?.fileExtensionCache?.set(file.uri, detectedExt)
 
             if (cached != null && isTimestampFresh(cached.lastModified, fileLastMod)) {
-                newParsedTracks.add(cached.copy(originalIndex = index))
+                val withFormat = cached.copy(originalIndex = index, formatExtension = detectedExt)
+                newParsedTracks.add(withFormat)
+                cacheNeedsWrite = cacheNeedsWrite || cached.formatExtension != detectedExt
                 continue
             }
 
@@ -281,7 +297,8 @@ class LibraryScanner(
                         originalIndex = index,
                         uri = file.uri,
                         albumArtBytes = artBytes,
-                        lastModified = fileLastMod
+                        lastModified = fileLastMod,
+                        formatExtension = fileExt
                     )
                 )
             } catch (t: Throwable) {
@@ -300,7 +317,7 @@ class LibraryScanner(
             )
         }
         val libraryChanged = hasChanges || cachedTracks.size != newParsedTracks.size || cachedTracks.isEmpty()
-        if (libraryChanged) {
+        if (libraryChanged || cacheNeedsWrite) {
             if (persistIfCurrent != null) {
                 persistIfCurrent(newParsedTracks)
             } else if (shouldPersist()) {
@@ -331,6 +348,7 @@ class LibraryScanner(
                     put("cm", track.comment ?: "")
                     put("u", track.uri.toString())
                     put("lm", track.lastModified)
+                    track.formatExtension?.let { put("fx", it) }
                 })
             }
             root.put("data", array)
@@ -402,6 +420,8 @@ class LibraryScanner(
                     comment = obj.optString("cm").takeIf { it.isNotEmpty() },
                     uri = Uri.parse(obj.getString("u")),
                     lastModified = obj.optLong("lm", 0L),
+                    formatExtension = obj.optString("fx")
+                        .takeIf(::isSupportedFormatExtension),
                     originalIndex = i
                 )
             )
@@ -435,6 +455,9 @@ class LibraryScanner(
     private fun cacheFile(context: Context): File = File(libraryCacheDirectory(context), CACHE_FILE_NAME)
 
     companion object {
+        private fun isSupportedFormatExtension(extension: String): Boolean =
+            extension in setOf("flac", "wav", "ogg", "opus", "m4a", "mp3")
+
         internal fun isTimestampFresh(cached: Long, current: Long): Boolean =
             cached > 0L && current > 0L && cached == current
 
