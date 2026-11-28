@@ -1,9 +1,11 @@
 package com.flactify.ui
 
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -16,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -35,7 +38,10 @@ import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.NowPlayingUiState
 import com.flactify.viewmodel.PositionState
 import com.flactify.viewmodel.ArtworkState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.media3.common.Player
+import com.flactify.PlaybackSettings
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -55,6 +61,44 @@ fun PlayerScreen(
     val albumArt = cachedAlbumArt.takeIf { artwork?.source == ArtworkState.Available.Source.TRACK_CACHE }
     val artworkUri = artwork?.artworkUri?.takeIf { artwork?.source == ArtworkState.Available.Source.MEDIA3 }
     val lyrics by viewModel.lyrics.collectAsState()
+    val context = LocalContext.current
+    val selectedTreeUri = context
+        .getSharedPreferences(PlaybackSettings.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
+        .getString("last_uri", null)
+        ?.let(Uri::parse)
+    val track = nowPlaying.current
+    val externalLyricsKey = track?.let {
+        ExternalLyricsCacheKey(
+            trackKey = it.identity.stableKey,
+            title = it.title,
+            artist = it.artist,
+            album = it.album
+        )
+    }
+    val externalLyrics by produceState<List<Pair<Long, String>>?>(
+        initialValue = null,
+        key1 = externalLyricsKey,
+        key2 = selectedTreeUri
+    ) {
+        value = track?.let { currentTrack ->
+            val cacheKey = externalLyricsKey ?: return@let null
+            withContext(Dispatchers.IO) {
+                ExternalLyricsCache.getOrLoad(cacheKey) {
+                    val sibling = externalLyricsUriFor(currentTrack.identity.uri, selectedTreeUri)
+                        ?: return@getOrLoad null
+                    context.contentResolver.openInputStream(sibling)?.use(::readExternalLyrics)
+                }
+            }
+        }
+    }
+    val trackLyricsKey = track?.identity?.stableKey
+    var useExternalLyrics by remember(trackLyricsKey) { mutableStateOf(false) }
+    var lyricOffsetMs by remember(trackLyricsKey) { mutableLongStateOf(0L) }
+    val selectedLyrics = when {
+        useExternalLyrics && !externalLyrics.isNullOrEmpty() -> externalLyrics.orEmpty()
+        lyrics.isNotEmpty() -> lyrics
+        else -> externalLyrics.orEmpty()
+    }
     val isShuffleMode = nowPlaying.shuffleEnabled
     val repeatMode = nowPlaying.repeatMode
     val audioInfo by viewModel.audioInfo.collectAsState()
@@ -351,7 +395,11 @@ fun PlayerScreen(
                             .height(44.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
-                        CurrentLyricLabel(viewModel, lyrics.isNotEmpty()) { showLyricsSheet = true }
+                        CurrentLyricLabel(
+                            viewModel = viewModel,
+                            lyrics = applyLyricsOffset(selectedLyrics, lyricOffsetMs),
+                            hasLyrics = selectedLyrics.isNotEmpty()
+                        ) { showLyricsSheet = true }
                     }
 
                         }
@@ -442,7 +490,16 @@ fun PlayerScreen(
         }
 
         if (showLyricsSheet) {
-            LyricsBottomSheet(viewModel, lyrics) { showLyricsSheet = false }
+            LyricsBottomSheet(
+                viewModel = viewModel,
+                embeddedLyrics = lyrics,
+                externalLyrics = externalLyrics.orEmpty(),
+                useExternalLyrics = useExternalLyrics,
+                onUseExternalLyricsChanged = { useExternalLyrics = it },
+                manualOffsetMs = lyricOffsetMs,
+                onManualOffsetChanged = { lyricOffsetMs = it },
+                onDismiss = { showLyricsSheet = false }
+            )
         }
     }
 }
@@ -484,10 +541,17 @@ private fun PlayerProgress(viewModel: PlayerViewModel) {
 @Composable
 private fun CurrentLyricLabel(
     viewModel: PlayerViewModel,
+    lyrics: List<Pair<Long, String>>,
     hasLyrics: Boolean,
     onOpenLyrics: () -> Unit
 ) {
-    val currentLyrics by viewModel.currentLyrics.collectAsState()
+    val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
+    val currentLyrics = if (lyrics.any { it.first >= 0L }) {
+        val index = activeLyricsIndex(lyrics, position.positionMs)
+        if (index >= 0) lyrics[index].second else ""
+    } else {
+        lyrics.joinToString("\n") { it.second }
+    }
     if (currentLyrics.isNotEmpty()) {
         Text(
             text = currentLyrics,
@@ -505,6 +569,13 @@ private fun CurrentLyricLabel(
             fontSize = 13.sp,
             modifier = Modifier.clickable(onClick = onOpenLyrics)
         )
+    } else {
+        Text(
+            text = "歌詞なし",
+            color = Color(0x66FFFFFF),
+            fontSize = 13.sp,
+            modifier = Modifier.clickable(onClick = onOpenLyrics)
+        )
     }
 }
 
@@ -512,15 +583,34 @@ private fun CurrentLyricLabel(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun LyricsBottomSheet(
     viewModel: PlayerViewModel,
-    lyrics: List<Pair<Long, String>>,
+    embeddedLyrics: List<Pair<Long, String>>,
+    externalLyrics: List<Pair<Long, String>>,
+    useExternalLyrics: Boolean,
+    onUseExternalLyricsChanged: (Boolean) -> Unit,
+    manualOffsetMs: Long,
+    onManualOffsetChanged: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
-    val activeLyricIndex = lyrics.indexOfLast { it.first <= position.positionMs }
+    val lyrics = when {
+        useExternalLyrics && externalLyrics.isNotEmpty() -> externalLyrics
+        embeddedLyrics.isNotEmpty() -> embeddedLyrics
+        else -> externalLyrics
+    }
+    val displayedLyrics = remember(lyrics, manualOffsetMs) {
+        applyLyricsOffset(lyrics, manualOffsetMs)
+    }
+    val activeLyricIndex = activeLyricsIndex(displayedLyrics, position.positionMs)
     val lyricsListState = rememberLazyListState()
+    val isDragged by lyricsListState.interactionSource.collectIsDraggedAsState()
+    var manualScroll by remember { mutableStateOf(false) }
 
-    LaunchedEffect(activeLyricIndex) {
-        if (activeLyricIndex >= 0 && activeLyricIndex < lyrics.size) {
+    LaunchedEffect(isDragged) {
+        if (isDragged) manualScroll = true
+    }
+
+    LaunchedEffect(activeLyricIndex, manualScroll) {
+        if (!manualScroll && activeLyricIndex >= 0 && activeLyricIndex < displayedLyrics.size) {
             lyricsListState.animateScrollToItem(activeLyricIndex)
         }
     }
@@ -534,24 +624,87 @@ private fun LyricsBottomSheet(
         ) {
             Text("歌詞", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(12.dp))
+            if (embeddedLyrics.isNotEmpty() && externalLyrics.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !useExternalLyrics,
+                        onClick = { onUseExternalLyricsChanged(false) },
+                        label = { Text("埋め込み") }
+                    )
+                    FilterChip(
+                        selected = useExternalLyrics,
+                        onClick = { onUseExternalLyricsChanged(true) },
+                        label = { Text("外部 .lrc") }
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "オフセット ${formatOffset(manualOffsetMs)}",
+                    color = Color(0xCCFFFFFF),
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { onManualOffsetChanged((manualOffsetMs - 100L).coerceAtLeast(-30_000L)) }) {
+                    Text("−0.1s")
+                }
+                TextButton(onClick = { onManualOffsetChanged((manualOffsetMs + 100L).coerceAtMost(30_000L)) }) {
+                    Text("+0.1s")
+                }
+            }
+            if (manualScroll) {
+                TextButton(onClick = { manualScroll = false }) {
+                    Text("現在の歌詞へ追従")
+                }
+            }
             LazyColumn(
                 state = lyricsListState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                itemsIndexed(lyrics) { index, (_, line) ->
-                    Text(
-                        text = line,
-                        color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
-                        fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
-                        fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                if (displayedLyrics.isEmpty()) {
+                    item {
+                        Text(
+                            text = "この曲には歌詞がありません",
+                            color = Color(0x99FFFFFF),
+                            fontSize = 16.sp,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                } else {
+                    itemsIndexed(displayedLyrics) { index, (timestamp, line) ->
+                        Text(
+                            text = line,
+                            color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
+                            fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
+                            fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = timestamp >= 0L) {
+                                    // Offset changes lyric display timing; seek the source timestamp.
+                                    viewModel.seekTo(lyrics[index].first)
+                                }
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+private fun formatOffset(offsetMs: Long): String = when {
+    offsetMs == 0L -> "0.0s"
+    offsetMs < 0L -> "−${String.format(java.util.Locale.US, "%.1f", -offsetMs / 1000.0)}s"
+    else -> "+${String.format(java.util.Locale.US, "%.1f", offsetMs / 1000.0)}s"
 }
 
 private fun formatTime(ms: Long): String {
