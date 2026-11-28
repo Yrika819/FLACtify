@@ -51,6 +51,7 @@ import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.RecommendedTrack
 import com.flactify.viewmodel.TrackData
 import com.flactify.viewmodel.Playlist
+import com.flactify.viewmodel.LibrarySearch
 import com.flactify.viewmodel.TagEditFailureCategory
 import com.flactify.viewmodel.decodeArtworkBitmap
 import kotlinx.coroutines.Dispatchers
@@ -215,12 +216,8 @@ fun LibraryScreen(
             var list = sortTracks(artistMap.values.flatten())
             if (showFavoritesOnly) list = list.filter { favorites.contains(it.uri.toString()) }
             if (searchQuery.isNotBlank()) {
-                val q = searchQuery.lowercase()
-                list = list.filter {
-                    it.title.lowercase().contains(q) ||
-                    it.artist.lowercase().contains(q) ||
-                    it.album.lowercase().contains(q)
-                }
+                val q = LibrarySearch.normalize(searchQuery)
+                list = list.filter { LibrarySearch.matchesNormalized(it, q) }
             }
             list
         }
@@ -230,12 +227,8 @@ fun LibraryScreen(
         var result = tracks
         if (showFavoritesOnly) result = result.filter { favorites.contains(it.uri.toString()) }
         if (searchQuery.isNotBlank()) {
-            val q = searchQuery.lowercase()
-            result = result.filter {
-                it.title.lowercase().contains(q) ||
-                it.artist.lowercase().contains(q) ||
-                it.album.lowercase().contains(q)
-            }
+            val q = LibrarySearch.normalize(searchQuery)
+            result = result.filter { LibrarySearch.matchesNormalized(it, q) }
         }
         return result
     }
