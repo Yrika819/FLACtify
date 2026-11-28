@@ -3,6 +3,19 @@
 This changelog records project releases and notable changes. FLACtify 2.5.2 is a
 personal-use release; it was not published for general public distribution.
 
+## Unreleased — 3.0.0 candidate (BLOCKED; not released)
+
+- Candidate identity is prepared as `com.flactify`, versionName `3.0.0`, versionCode `18`.
+- Candidate source is based on the Owner-evaluated Phase 9B source HEAD
+  `e03dcd9cbd5591e61505387afe9364b7df988dc0`; the only product-source change in this
+  preparation is the app version metadata.
+- Owner-reported device results: Phase 9A 8/8, Phase 9B 8/8, and Phase 9C 21/21 PASS, with
+  no reported defect. These are Owner device results, not Cloud CI results.
+- Release readiness is blocked by a HIGH-severity play-statistics backup restore mismatch.
+  See [`docs/release/release-readiness-v3.0.0.md`](docs/release/release-readiness-v3.0.0.md).
+- No v3.0.0 Release APK has been generated. No signing, release tag, GitHub Release, merge,
+  or public distribution has occurred.
+
 ## 2.5.2 — 2026-11-28
 
 - Added content-based Opus/Ogg detection, OpusTags metadata, lyrics and artwork parsing,
