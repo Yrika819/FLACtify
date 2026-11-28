@@ -21,7 +21,7 @@ authority for new work.
 | Version | `2.5.2` (`versionCode` 17) |
 | SDK levels | `compileSdk 36`, `targetSdk 36`, `minSdk 26` |
 | Playback engine | Android Media3 `1.11.1` (single engine) |
-| UI | Existing FLACtify full-player UI; no mini-player UI yet |
+| UI | Existing FLACtify full-player UI plus Phase 6B-2 mini-player MVP (PR #24) |
 | Audio | Optional experimental Spatial Audio Studio backed by Steam Audio 4.8.1 |
 | Distribution | Personal-use Release completed; no public APK/AAB; public binary-license gate remains closed |
 
@@ -59,11 +59,29 @@ track retention on transient provider reads were merged through PR #22. The Owne
 device check passed 6/6. The signed 2.5.2 APK is for personal use only; the public binary
 distribution gate remains closed.
 
+## Phase 6B-2: mini-player MVP (merged)
+
+PR #24 was merged on 2026-11-28 at `429b9ed14d5d4dfd10cbec72f035aa648196f50d`.
+Its tested PR head, `7e23d7899480292418cc657ff1b7594ac70d39b7`, matched the Owner's
+FoundationClosure device-validation target. The Owner reported 12/12 manual checks passed.
+This aggregate Owner result is device evidence, not a Cloud test result. The Owner's
+qualitative experience of responsiveness is likewise distinct from quantitative frame-time,
+jank, or memory measurements; no such measurements are recorded here.
+
+The mini-player uses the shared `NowPlayingUiState`, remains behind its internal feature
+switch, and is hidden when no track is current or the full player is open. The Gate 3
+reconnect paused-retention assertion remains an unresolved risk; its device cycle was not
+restarted as part of Phase 6B-2.
+
 ## Verification status
 
 | Area | State | Evidence / limit |
 | --- | --- | --- |
 | PR #22 required CI | PASS | Android validation, CodeQL, LGPL relink, and fresh-extraction compliance all succeeded at head `8e0e597a`; 389 unit tests passed. |
+| PR #24 required CI | PASS | All six check-runs succeeded at tested head `7e23d7899480292418cc657ff1b7594ac70d39b7`. |
+| Phase 6B-2 Cloud unit tests | PASS | 393 unit tests passed in the PR validation run. |
+| Phase 6B-2 Owner device validation | PASS (Owner-reported) | Owner reported 12/12 manual checks passed on the matching FoundationClosure target. |
+| Phase 6B-2 quantitative performance | NOT MEASURED | No frame-time, jank, or memory measurements are represented by the Owner's aggregate manual result. |
 | Release 2.5.2 identity | PASS | `com.flactify`, versionCode 17 / versionName 2.5.2. Signed APK SHA-256 is recorded in `CHANGELOG.md`. |
 | Signed APK and source match | PASS | Owner-provided APK hash verified; 218 non-signature ZIP entries match the Cloud-built unsigned APK from `26b26fe`; three v1 `META-INF` signing entries were added and APK Signing Scheme v2/v3 verify. |
 | Pixel 7a update and Owner validation | PASS (Owner-reported) | Existing-key update succeeded; no extra device test was run for this closure. |
@@ -75,10 +93,12 @@ distribution gate remains closed.
 
 1. **Gate 3 — NowPlaying contract:** implementation is merged. Preserve the reconnect
    paused-retention finding as an open risk; do not claim full Gate 3 closure.
-2. **Phase 6B-2 — Mini-player MVP:** the Owner authorized development to resume after the
-   2.5.2 release closure. The mini-player remains unimplemented and must follow
-   [`MINIPLAYER_SPEC.md`](MINIPLAYER_SPEC.md). Carry the Gate 3 risk explicitly into its PR.
-3. **Gate 5 — UX polish and stability:** continue to require device and performance evidence.
+2. **Phase 6B-2 — Mini-player MVP:** merged through PR #24 and accepted after Owner-reported
+   12/12 manual device checks. See [`MINIPLAYER_SPEC.md`](MINIPLAYER_SPEC.md). Keep the Gate 3
+   risk open; the manual acceptance does not close that separate finding.
+3. **Gate 5 — UX polish and stability:** candidate investigation is in progress. Prioritize
+   measured performance evidence and playback-flow review before choosing visual or control
+   changes; no Gate 5 implementation is authorized by this status update.
 
 ## Non-negotiable constraints
 

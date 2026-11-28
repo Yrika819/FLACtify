@@ -20,7 +20,7 @@ proposals are kept only where they explain a current constraint. Decisions marke
 | D-008 | Keep the detailed local roadmap/design archive outside Git and preserve it. | ACTIVE | Public documents are sanitized summaries. Do not copy the local archive or its absolute paths into the repository. |
 | D-009 | Liquid Glass / LiquidGrass is cancelled. | ACTIVE | Do not add glass shaders, refraction, or glass-quality settings. |
 | D-010 | Apple Music-style immersive cover-art expansion is cancelled. | ACTIVE | Keep the existing FLACtify full-player appearance. Old research remains historical only. |
-| D-011 | An always-available in-app mini player is the top product priority after the shared playback contract. | ACTIVE | Shared contract is merged. Owner authorized Phase 6B-2 to resume after Release 2.5.2; carry the unresolved Gate 3 reconnect retention risk. |
+| D-011 | An always-available in-app mini player is the top product priority after the shared playback contract. | ACTIVE | Phase 6B-2 MVP was integrated through PR #24 and received Owner-reported 12/12 device acceptance. Gate 3 reconnect retention remains an open risk. |
 | D-012 | Stop new Glass/immersive-art research. | ACTIVE | Preserve research material; do not spend implementation time on it. |
 | D-013 | Preserve existing playback, lyrics, audio-quality diagnostics, staged SDK migration, and Git-external archive practice. | ACTIVE | These are constraints, not optional cleanup targets. |
 
@@ -81,6 +81,23 @@ proposals are kept only where they explain a current constraint. Decisions marke
 - The standard personal-release workflow is documented in
   [`CLOUD_DEVELOPMENT.md`](CLOUD_DEVELOPMENT.md): Cloud unsigned Release build, owner-only
   Drive handoff, then Mac-side alignment/signing with the existing key.
+
+### 2026-11-28 — Phase 6B-2 MVP integration and Owner validation
+
+- PR #24's latest head `7e23d7899480292418cc657ff1b7594ac70d39b7` matched the
+  FoundationClosure APK used for Owner device validation. All six PR check-runs succeeded;
+  the Cloud unit-test run reported 393 passing tests.
+- Owner reported all 12/12 manual mini-player checks passed. This is recorded as
+  Owner-reported device evidence, separate from Cloud test results.
+- Owner's qualitative responsiveness assessment is not a quantitative performance result.
+  Frame-time, jank, and memory measurements remain unrecorded and are Gate 5 investigation
+  candidates.
+- PR #24 was formally merged on 2026-11-28 at
+  `429b9ed14d5d4dfd10cbec72f035aa648196f50d`.
+- Gate 3's reconnect paused-retention failure remains unresolved. This integration neither
+  claims Gate 3 fully passed nor restarts its device test cycle.
+- Gate 5 candidate research may proceed, but no Gate 5 implementation or Release APK
+  generation is authorized by this integration decision.
 
 ## Standing delivery rules
 

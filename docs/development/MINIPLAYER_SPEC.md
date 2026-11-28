@@ -1,14 +1,16 @@
 # Mini-Player Specification
 
-Status: **PLANNED / NOT IMPLEMENTED / OWNER-AUTHORIZED TO RESUME after Release 2.5.2**
+Status: **MVP IMPLEMENTED and integrated through PR #24; Owner-reported device acceptance 12/12**
 
 Shared-state source: `f70eb8d1bcf61c724b248d17f02fb60153dd561b` (PR #21 merge)
 
-This document defines the intended in-app mini player. The shared now-playing contract is
-implemented and reviewed. On 2026-11-28, the Owner authorized Phase 6B-2 development to
-resume after Release 2.5.2 completion. Gate 3's reconnect paused-retention assertion remains
-an unresolved risk; this authorization does not mark Gate 3 fully passed. The risk must be
-carried into the mini-player PR and its validation plan.
+This document records the MVP contract and follow-up boundaries for the in-app mini player.
+PR #24 merged on 2026-11-28 at `429b9ed14d5d4dfd10cbec72f035aa648196f50d`; its tested head
+was `7e23d7899480292418cc657ff1b7594ac70d39b7`. The Owner reported 12/12 manual device checks
+passed. This is Owner-reported device validation, separate from Cloud unit/CI results.
+Qualitative responsiveness feedback is not a quantitative performance measurement; frame
+time, jank, and memory data remain unmeasured. Gate 3's reconnect paused-retention assertion
+remains an unresolved risk and its device test cycle was not restarted.
 
 ## Preconditions
 
@@ -25,7 +27,8 @@ All of the following are required before mini-player implementation:
 5. The change is split into reviewable PRs; the contract and mini-player UI are not mixed
    in one unreviewable change.
 
-At the baseline, no mini-player composable, slot, or feature flag exists.
+The MVP is implemented behind the internal `MiniPlayerFeature` switch. Its initial feature
+scope and constraints below remain the baseline for future Gate 5 proposals.
 
 ## Product intent
 
@@ -127,10 +130,12 @@ absence must use an explicit placeholder, never the previous track's image.
 
 ## Delivery sequence
 
-1. Gate 3 contract implementation and review.
-2. Mini-player skeleton behind a local/internal flag, with state and navigation tests.
-3. Device validation on synthetic fixtures.
-4. UX review with the Owner.
-5. Only then consider optional controls or animation.
+1. Gate 3 contract implementation and review (merged; reconnect paused-retention risk remains
+   open and is not being retested in this phase).
+2. Mini-player MVP behind an internal flag, with state and navigation tests (merged in PR #24).
+3. Owner device validation on synthetic fixtures (Owner reported 12/12 checks passed).
+4. Gate 5 proposals: collect quantitative performance evidence and review playback flows,
+   then assess visual polish, cross-screen consistency, optional controls, and transitions.
+   This list is investigation only; no Gate 5 implementation is approved here.
 
 Any step that cannot be validated on a device is reported as UNVERIFIED, not PASS.
