@@ -379,7 +379,7 @@ class PlaybackController(
         )
     }
 
-    fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun playPause() { player?.let { if (it.playWhenReady) it.pause() else it.play() } }
     fun seekTo(position: Long) {
         player?.let { mediaController ->
             // Unknown duration is not a zero-length item: only clamp when the duration is known.
@@ -393,6 +393,8 @@ class PlaybackController(
     }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
+    fun hasNextMediaItem(): Boolean = player?.hasNextMediaItem() == true
+    fun hasPreviousMediaItem(): Boolean = player?.hasPreviousMediaItem() == true
     fun setShuffle(enabled: Boolean) {
         // The service starts the round from onShuffleModeEnabledChanged, which also covers
         // notification/Bluetooth/other-controller changes. Sending a command here as well made

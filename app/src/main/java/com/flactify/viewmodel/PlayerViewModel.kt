@@ -1442,19 +1442,25 @@ class PlayerViewModel : ViewModel() {
     }
 
     fun next() {
-        playbackController?.currentUri()?.toString()?.let {
-            userLibraryController?.recordSkip(it)
-            notifyStatsChanged()
+        val controller = playbackController
+        if (controller?.hasNextMediaItem() == true) {
+            controller.currentUri()?.toString()?.let {
+                userLibraryController?.recordSkip(it)
+                notifyStatsChanged()
+            }
         }
-        playbackController?.seekToNext()
+        controller?.seekToNext()
     }
 
     fun previous() {
-        playbackController?.currentUri()?.toString()?.let {
-            userLibraryController?.recordSkip(it)
-            notifyStatsChanged()
+        val controller = playbackController
+        if (controller?.hasPreviousMediaItem() == true) {
+            controller.currentUri()?.toString()?.let {
+                userLibraryController?.recordSkip(it)
+                notifyStatsChanged()
+            }
         }
-        playbackController?.seekToPrevious()
+        controller?.seekToPrevious()
     }
 
     fun toggleShuffle() {
