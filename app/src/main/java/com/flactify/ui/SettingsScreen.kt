@@ -47,6 +47,7 @@ fun SettingsScreen(
     val scanCompleted by viewModel.scanCompleted.collectAsState()
     val scanTotal by viewModel.scanTotal.collectAsState()
     val scanFailures by viewModel.scanFailures.collectAsState()
+    val context = LocalContext.current
     val hasSelectedLibrary = remember(context) {
         context.getSharedPreferences(PlaybackSettings.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
             .getString("last_uri", null) != null
@@ -58,7 +59,6 @@ fun SettingsScreen(
     ) {
         mutableStateOf(spatialHrtfMixPercent.toFloat())
     }
-    val context = LocalContext.current
     val jaudiotaggerLicense = remember(context) {
         runCatching {
             context.assets.open("licenses/LGPL-2.1.txt").bufferedReader().use { it.readText() }
