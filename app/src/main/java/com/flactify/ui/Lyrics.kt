@@ -17,30 +17,45 @@ internal data class ExternalLyricsCacheKey(
 /** Small process-local cache; misses are cached too, so recomposition never rescans a sibling. */
 internal object ExternalLyricsCache {
     private const val MAX_ENTRIES = 128
-    private val entries = object : LinkedHashMap<ExternalLyricsCacheKey, List<Pair<Long, String>>?>(
-        MAX_ENTRIES,
-        0.75f,
-        true
-    ) {
-        override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<ExternalLyricsCacheKey, List<Pair<Long, String>>?>?
-        ): Boolean = size > MAX_ENTRIES
-    }
+    internal const val MAX_CACHED_TEXT_BYTES = 8 * 1024 * 1024
+    private data class Entry(
+        val lyrics: List<Pair<Long, String>>?,
+        val estimatedBytes: Int
+    )
+
+    private var cachedBytes = 0
+    private val entries = LinkedHashMap<ExternalLyricsCacheKey, Entry>(MAX_ENTRIES, 0.75f, true)
 
     @Synchronized
     fun getOrLoad(
         key: ExternalLyricsCacheKey,
         loader: () -> List<Pair<Long, String>>?
     ): List<Pair<Long, String>>? {
-        if (entries.containsKey(key)) return entries[key]
+        entries[key]?.let { return it.lyrics }
+        if (entries.containsKey(key)) return null
         val value = loader()
-        entries[key] = value
+        // UTF-16 character storage is conservatively estimated at two bytes per code unit;
+        // the separate byte ceiling bounds retained lyric text across many large LRC files.
+        val estimatedBytes = value?.fold(0L) { total, (_, line) ->
+            (total + 8L + line.length.toLong() * 2L).coerceAtMost(Int.MAX_VALUE.toLong())
+        }?.toInt() ?: 1
+        if (estimatedBytes > MAX_CACHED_TEXT_BYTES) return value
+        while (entries.size >= MAX_ENTRIES || cachedBytes.toLong() + estimatedBytes > MAX_CACHED_TEXT_BYTES) {
+            val eldest = entries.entries.iterator().let { iterator ->
+                if (iterator.hasNext()) iterator.next() else null
+            } ?: break
+            cachedBytes -= eldest.value.estimatedBytes
+            entries.remove(eldest.key)
+        }
+        entries[key] = Entry(value, estimatedBytes)
+        cachedBytes += estimatedBytes
         return value
     }
 
     @Synchronized
     fun clearForTests() {
         entries.clear()
+        cachedBytes = 0
     }
 }
 

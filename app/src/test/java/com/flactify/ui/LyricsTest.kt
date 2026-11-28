@@ -94,6 +94,21 @@ class LyricsTest {
     }
 
     @Test
+    fun `cache does not retain a lyric value larger than its aggregate budget`() {
+        val key = ExternalLyricsCacheKey("large", null, null, null)
+        val largeLine = "x".repeat(ExternalLyricsCache.MAX_CACHED_TEXT_BYTES / 2)
+        var loads = 0
+        val loader: () -> List<Pair<Long, String>> = {
+            loads++
+            listOf(0L to largeLine)
+        }
+
+        assertEquals(largeLine, ExternalLyricsCache.getOrLoad(key, loader)?.single()?.second)
+        assertEquals(largeLine, ExternalLyricsCache.getOrLoad(key, loader)?.single()?.second)
+        assertEquals(2, loads)
+    }
+
+    @Test
     fun `manual offset and active line ignore untimed entries`() {
         val source = listOf(1_000L to "one", 2_000L to "two", -1L to "plain")
         val shifted = applyLyricsOffset(source, 500L)

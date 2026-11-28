@@ -14,6 +14,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import android.media.MediaMetadataRetriever
 import android.util.AtomicFile
 
@@ -246,7 +248,7 @@ class LibraryScanner(
                     val source = context.contentResolver.openInputStream(file.uri)
                         ?: throw java.io.IOException("Unable to open audio document")
                     source.use { input ->
-                        FileOutputStream(scanFile).use { output -> input.copyTo(output) }
+                        FileOutputStream(scanFile).use { output -> copyBoundedMetadata(input, output) }
                     }
                     sourceCopied = true
 
@@ -573,6 +575,27 @@ class LibraryScanner(
 
         const val CACHE_FILE_NAME = "track_cache.json"
         const val LEGACY_CACHE_FILE_NAME = "track_cache.json"
+        /** Bounds temporary storage and I/O for a single SAF item during full metadata parsing. */
+        const val MAX_TRACK_METADATA_COPY_BYTES = 1L shl 30
+
+        internal fun copyBoundedMetadata(
+            input: InputStream,
+            output: OutputStream,
+            maxBytes: Long = MAX_TRACK_METADATA_COPY_BYTES
+        ): Long {
+            require(maxBytes >= 0L)
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var copied = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) return copied
+                if (copied + count > maxBytes) {
+                    throw java.io.IOException("Audio document exceeds the metadata scan size limit")
+                }
+                output.write(buffer, 0, count)
+                copied += count
+            }
+        }
         fun libraryCacheDirectory(context: Context): File =
             File(context.cacheDir, "flactify-library").apply { mkdirs() }
 

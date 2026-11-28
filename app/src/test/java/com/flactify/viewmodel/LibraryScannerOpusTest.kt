@@ -12,16 +12,27 @@ import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 class LibraryScannerOpusTest {
     private val uriCache = ConcurrentHashMap<String, Uri>()
+
+    @Test
+    fun `metadata copy refuses input beyond its temporary file budget`() {
+        val output = ByteArrayOutputStream()
+        assertThrows(IOException::class.java) {
+            LibraryScanner.copyBoundedMetadata(ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)), output, maxBytes = 3)
+        }
+        assertTrue(output.size() <= 3)
+    }
 
     @Test
     fun `initial scan and incremental scan recognize Opus by content and ignore corrupt mixture`() = runBlocking {
@@ -196,6 +207,7 @@ class LibraryScannerOpusTest {
         every { context.cacheDir } returns tempDir
         val root = mockk<DocumentFile>()
         val replacement = document("replacement.opus", replacementBytes, 100L, resolver)
+        val replacementUri = uriFor("replacement.opus")
         every { root.exists() } returns true
         every { root.isDirectory } returns true
         every { root.listFiles() } returns arrayOf(replacement)
@@ -206,7 +218,7 @@ class LibraryScannerOpusTest {
             title = "Stale cached title",
             artist = "Synthetic artist",
             originalIndex = 0,
-            uri = replacement.uri,
+            uri = replacementUri,
             lastModified = 100L,
             formatExtension = "opus",
             fileSize = replacementBytes.size.toLong() - 1L
@@ -223,7 +235,7 @@ class LibraryScannerOpusTest {
             assertTrue(result.changed)
             assertEquals(1, result.tracks.size)
             assertFalse(result.tracks.single().title == "Stale cached title")
-            verify(exactly = 2) { resolver.openInputStream(replacement.uri) }
+            verify(exactly = 2) { resolver.openInputStream(replacementUri) }
         } finally {
             unmockkStatic(DocumentFile::class)
             tempDir.deleteRecursively()
@@ -241,6 +253,7 @@ class LibraryScannerOpusTest {
         every { context.cacheDir } returns tempDir
         val root = mockk<DocumentFile>()
         val trackFile = document("rescan.opus", bytes, 100L, resolver)
+        val trackUri = uriFor("rescan.opus")
         every { root.exists() } returns true
         every { root.isDirectory } returns true
         every { root.listFiles() } returns arrayOf(trackFile)
@@ -250,12 +263,12 @@ class LibraryScannerOpusTest {
             val scanner = LibraryScanner(null)
             val initial = scanner.scan(context, folderUri, cachedTracks = emptyList(), persistIfCurrent = {})
             assertTrue(initial.scanSucceeded)
-            verify(exactly = 2) { resolver.openInputStream(trackFile.uri) }
+            verify(exactly = 2) { resolver.openInputStream(trackUri) }
 
             val refreshed = scanner.fullRescan(context, folderUri, persistIfCurrent = {})
             assertTrue(refreshed.scanSucceeded)
-            assertEquals(initial.tracks.map { it.uri }, refreshed.tracks.map { it.uri })
-            verify(exactly = 4) { resolver.openInputStream(trackFile.uri) }
+            assertEquals(listOf(trackUri), refreshed.tracks.map { it.uri })
+            verify(exactly = 4) { resolver.openInputStream(trackUri) }
         } finally {
             unmockkStatic(DocumentFile::class)
             tempDir.deleteRecursively()
@@ -270,6 +283,7 @@ class LibraryScannerOpusTest {
         val bytes = File("src/test/resources/audio/opus_untagged.opus").readBytes()
         val root = mockk<DocumentFile>()
         val document = document("legacy.opus", bytes, 100L, resolver)
+        val documentUri = uriFor("legacy.opus")
         every { context.contentResolver } returns resolver
         every { root.exists() } returns true
         every { root.isDirectory } returns true
@@ -281,7 +295,7 @@ class LibraryScannerOpusTest {
             title = "Legacy cached title",
             artist = "Synthetic artist",
             originalIndex = 0,
-            uri = document.uri,
+            uri = documentUri,
             lastModified = 100L
         )
         try {
@@ -296,7 +310,7 @@ class LibraryScannerOpusTest {
             assertEquals("Legacy cached title", result.tracks.single().title)
             assertEquals("opus", result.tracks.single().formatExtension)
             assertEquals(bytes.size.toLong(), result.tracks.single().fileSize)
-            verify(exactly = 1) { resolver.openInputStream(document.uri) }
+            verify(exactly = 1) { resolver.openInputStream(documentUri) }
         } finally {
             unmockkStatic(DocumentFile::class)
         }
