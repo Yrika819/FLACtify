@@ -47,4 +47,15 @@ class M3uSafResolverTest {
         assertEquals(listOf("content://synthetic/two"), result.resolvedUris)
         assertEquals(listOf("content://outside/no"), result.unresolved)
     }
+
+    @Test
+    fun `URI schemes are never treated as relative paths`() {
+        val result = M3uSafResolver.resolve(
+            listOf(M3uEntry("https://host/song.flac"), M3uEntry("file:///Music/song.flac")),
+            listOf(M3uGrantFile("https:/host/song.flac", "content://synthetic/lookalike"))
+        )
+
+        assertEquals(emptyList<String>(), result.resolvedUris)
+        assertEquals(listOf("https://host/song.flac", "file:///Music/song.flac"), result.unresolved)
+    }
 }

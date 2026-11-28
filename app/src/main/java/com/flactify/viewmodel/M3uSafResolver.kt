@@ -54,7 +54,7 @@ object M3uSafResolver {
 
     private fun normalizeRelative(value: String): String? {
         val decoded = decode(value).replace('\\', '/')
-        if (decoded.startsWith('/') || decoded.matches(Regex("^[A-Za-z]:/.*"))) return null
+        if (decoded.startsWith('/') || URI_SCHEME.containsMatchIn(decoded)) return null
         val parts = decoded.split('/').filter { it.isNotEmpty() && it != "." }
         if (parts.any { it == ".." }) return null
         return parts.joinToString("/").takeIf { it.isNotEmpty() }
@@ -63,6 +63,8 @@ object M3uSafResolver {
 
     private fun normalizeCandidate(value: String): String =
         normalizeRelative(value) ?: "\u0000invalid"
+
+    private val URI_SCHEME = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
 
     private fun decode(value: String): String = runCatching {
         URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8.name())
