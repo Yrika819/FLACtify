@@ -147,7 +147,7 @@ remain untouched.
 | Large audio scan fallback | IMPLEMENTED | Seekable SAF descriptor metadata path avoids whole-file copies above the retained 1 GiB staging limit; synthetic scanner metadata tests pass. Embedded artwork is omitted on the oversized fallback. |
 | Tag edit staging safety | IMPLEMENTED | Bounded 64 KiB copy loops, 1 GiB source/output ceiling, free-space preflight, cancellation checks, and existing recovery/readback preserved; `TagEditorTest` passes. |
 | Opus multi-value preservation | CORE_ONLY | Multi-value tags and untouched lyrics/ReplayGain/artwork preservation are covered by synthetic tests; no personal media used. |
-| Backup recovery | CORE_ONLY | A durable pending-restore journal retains retry/discard state after failed rollback; Settings UI for presenting pending recovery is not yet integrated. |
+| Backup recovery | IMPLEMENTED | A durable pending-restore journal is exposed in Settings with retry/discard actions, bounded preview counts, exception feedback, and immediate favorites/playlists/statistics refresh after successful recovery. |
 | M3U relative SAF resolver | CORE_ONLY | Safe resolver handles Unicode, percent-encoding, separators, traversal rejection, and ambiguity; current import UI still resolves exact known URIs only. |
 | Player and lyrics layout | IMPLEMENTED | Navigation-bar inset and weighted lyrics list changes; related UI tests pass. |
 | ReplayGain playback correction | POC / BLOCKED | Numeric PCM prototype passed 13 tests; safe Media3 item-transition synchronization and direct/offload/spatial bypass are unresolved, so no correction is applied to playback. |
@@ -162,8 +162,11 @@ LGPL relink proof. The debug APK is 52.66 MiB and unsigned ReleaseValidation APK
 A controlled same-variant debug build comparison measured 54,793,946 bytes at Phase 7G
 baseline `b69d1e6` and 55,213,658 bytes at the Phase 8 candidate (+419,712 bytes / 409.9
 KiB). This is debug APK size only, not a production APK delta. GitHub CodeQL Java/Kotlin and
-C/C++, Fresh-extraction compliance, and LGPL relink passed on earlier candidate revisions;
-the same required checks are running for `fe4c003`. Owner device checks remain unperformed.
+C/C++, Fresh-extraction compliance, and LGPL relink passed on earlier candidate revisions.
+The backup recovery Settings UI was subsequently completed and its local Cloud checks passed
+(483 JVM tests, lint, and Debug assembly); final cumulative CI, ReleaseValidation/R8,
+FoundationClosure, alignment, and Compliance checks must be read from the latest Phase 8 PR
+head. Owner device checks remain unperformed.
 
 The candidate is intended for a Draft PR against `main`; no merge, production signing,
 production release, public distribution, or device operation is authorized.

@@ -1898,14 +1898,31 @@ class PlayerViewModel : ViewModel() {
 
     fun createLibraryBackup(): String = userLibraryController?.createBackup().orEmpty()
 
+    fun pendingLibraryBackupPreview(): LibraryBackupPreview? =
+        userLibraryController?.pendingRestorePreview()
+
+    fun retryPendingLibraryBackupRestore(): Boolean {
+        val restored = userLibraryController?.retryPendingRestore() ?: false
+        if (restored) refreshRestoredLibraryState()
+        return restored
+    }
+
+    fun discardPendingLibraryBackupRestore() {
+        userLibraryController?.discardPendingRestore()
+    }
+
     fun restoreLibraryBackup(json: String, merge: Boolean = false): Boolean {
         val restored = if (merge) userLibraryController?.mergeBackup(json) else userLibraryController?.restoreBackup(json)
         if (restored == true) {
-            _favorites.value = userLibraryController?.getFavorites() ?: emptySet()
-            refreshPlaylists()
-            _statsVersion.value = _statsVersion.value + 1
+            refreshRestoredLibraryState()
         }
         return restored == true
+    }
+
+    private fun refreshRestoredLibraryState() {
+        _favorites.value = userLibraryController?.getFavorites() ?: emptySet()
+        refreshPlaylists()
+        _statsVersion.value = _statsVersion.value + 1
     }
 
     fun setSpatialAudioMode(mode: SpatialAudioMode) {

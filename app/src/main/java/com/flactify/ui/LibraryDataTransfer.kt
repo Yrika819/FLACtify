@@ -13,6 +13,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,7 @@ import com.flactify.viewmodel.LibraryBackupCodec
 import com.flactify.viewmodel.LibraryBackupPreview
 import com.flactify.viewmodel.PlayerViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
@@ -39,7 +41,20 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
     val scope = rememberCoroutineScope()
     var pendingJson by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<LibraryBackupPreview?>(null) }
+    var pendingRestorePreview by remember { mutableStateOf<LibraryBackupPreview?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(viewModel) {
+        try {
+            pendingRestorePreview = withContext(Dispatchers.IO) {
+                viewModel.pendingLibraryBackupPreview()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            message = "保留中のバックアップ状態を確認できませんでした"
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -80,6 +95,45 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        pendingRestorePreview?.let { pending ->
+            Text(
+                "前回の復元が完了しませんでした。保留中のバックアップ: お気に入り ${pending.favoriteCount}件、" +
+                    "プレイリスト ${pending.playlistCount}件、再生統計 ${pending.statsCount}件",
+                color = Color(0xFFFFCC80), fontSize = 12.sp
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    scope.launch {
+                        try {
+                            val restored = withContext(Dispatchers.IO) {
+                                viewModel.retryPendingLibraryBackupRestore()
+                            }
+                            message = if (restored) "保留中のバックアップを復元しました" else "復元に失敗しました。元データと保留中のバックアップを確認してください"
+                            pendingRestorePreview = withContext(Dispatchers.IO) {
+                                viewModel.pendingLibraryBackupPreview()
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            message = "復元に失敗しました。元データと保留中のバックアップを確認してください"
+                        }
+                    }
+                }) { Text("復元を再試行") }
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { viewModel.discardPendingLibraryBackupRestore() }
+                            pendingRestorePreview = null
+                            message = "保留中のバックアップを破棄しました"
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            message = "保留中のバックアップを破棄できませんでした"
+                        }
+                    }
+                }) { Text("保留を破棄", color = Color.White) }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { exportLauncher.launch("flactify-library-backup.json") }) { Text("バックアップを書き出す") }
             OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }) {
@@ -109,14 +163,48 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(6.dp)) {
                     Button(onClick = {
                         val json = pendingJson
-                        if (json != null) message = if (viewModel.restoreLibraryBackup(json, merge = true)) "既存データを保持して統合しました" else "復元に失敗しました"
-                        preview = null; pendingJson = null
+                        if (json != null) {
+                            scope.launch {
+                                try {
+                                    val restored = withContext(Dispatchers.IO) {
+                                        viewModel.restoreLibraryBackup(json, merge = true)
+                                    }
+                                    message = if (restored) "既存データを保持して統合しました" else "復元に失敗しました"
+                                    preview = null
+                                    pendingJson = null
+                                    pendingRestorePreview = withContext(Dispatchers.IO) {
+                                        viewModel.pendingLibraryBackupPreview()
+                                    }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    message = "復元に失敗しました。既存データと保留中のバックアップを確認してください"
+                                }
+                            }
+                        }
                     }) { Text("統合") }
                     Button(
                         onClick = {
                             val json = pendingJson
-                            if (json != null) message = if (viewModel.restoreLibraryBackup(json)) "バックアップを復元しました" else "復元に失敗しました"
-                            preview = null; pendingJson = null
+                            if (json != null) {
+                                scope.launch {
+                                    try {
+                                        val restored = withContext(Dispatchers.IO) {
+                                            viewModel.restoreLibraryBackup(json)
+                                        }
+                                        message = if (restored) "バックアップを復元しました" else "復元に失敗しました"
+                                        preview = null
+                                        pendingJson = null
+                                        pendingRestorePreview = withContext(Dispatchers.IO) {
+                                            viewModel.pendingLibraryBackupPreview()
+                                        }
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (_: Exception) {
+                                        message = "復元に失敗しました。既存データと保留中のバックアップを確認してください"
+                                    }
+                                }
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB3261E))
                     ) { Text("置き換え") }
