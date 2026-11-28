@@ -250,12 +250,12 @@ class LibraryScannerOpusTest {
             val scanner = LibraryScanner(null)
             val initial = scanner.scan(context, folderUri, cachedTracks = emptyList(), persistIfCurrent = {})
             assertTrue(initial.scanSucceeded)
-            verify(exactly = 1) { resolver.openInputStream(trackFile.uri) }
+            verify(exactly = 2) { resolver.openInputStream(trackFile.uri) }
 
             val refreshed = scanner.fullRescan(context, folderUri, persistIfCurrent = {})
             assertTrue(refreshed.scanSucceeded)
             assertEquals(initial.tracks.map { it.uri }, refreshed.tracks.map { it.uri })
-            verify(exactly = 2) { resolver.openInputStream(trackFile.uri) }
+            verify(exactly = 4) { resolver.openInputStream(trackFile.uri) }
         } finally {
             unmockkStatic(DocumentFile::class)
             tempDir.deleteRecursively()
@@ -309,6 +309,11 @@ class LibraryScannerOpusTest {
         every { context.cacheDir } returns tempDir
         every { context.filesDir } returns tempDir
         val cacheDir = File(tempDir, "flactify-library").apply { mkdirs() }
+        val folderUri = uriFor("legacy-json-folder")
+        val trackUri = uriFor("legacy-json-track")
+        mockkStatic(Uri::class)
+        every { Uri.parse("content://synthetic-library/folder") } returns folderUri
+        every { Uri.parse("content://synthetic-library/song.opus") } returns trackUri
         File(cacheDir, LibraryScanner.CACHE_FILE_NAME).writeText(
             """
             {"version":1,"folderUri":"content://synthetic-library/folder","data":[
@@ -324,6 +329,7 @@ class LibraryScannerOpusTest {
             assertNull(track.formatExtension)
             assertEquals(-1L, track.fileSize)
         } finally {
+            unmockkStatic(Uri::class)
             tempDir.deleteRecursively()
         }
     }
