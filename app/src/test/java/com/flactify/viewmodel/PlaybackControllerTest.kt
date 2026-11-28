@@ -20,6 +20,43 @@ import org.junit.Test
 
 class PlaybackControllerTest {
     @Test
+    fun `playPause pauses when playback is requested during buffering`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.isPlaying } returns false
+        every { player.playWhenReady } returns true
+        val controller = newController(player)
+
+        controller.playPause()
+
+        verify(exactly = 1) { player.pause() }
+        verify(exactly = 0) { player.play() }
+    }
+
+    @Test
+    fun `playPause starts playback when there is no outstanding play request`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.isPlaying } returns false
+        every { player.playWhenReady } returns false
+        val controller = newController(player)
+
+        controller.playPause()
+
+        verify(exactly = 1) { player.play() }
+        verify(exactly = 0) { player.pause() }
+    }
+
+    @Test
+    fun `queue adjacency checks follow Media3 boundary state`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.hasNextMediaItem() } returns false
+        every { player.hasPreviousMediaItem() } returns true
+        val controller = newController(player)
+
+        assertTrue(!controller.hasNextMediaItem())
+        assertTrue(controller.hasPreviousMediaItem())
+    }
+
+    @Test
     fun `callbacks from replaced controller are ignored`() {
         val oldController = mockk<MediaController>(relaxed = true)
         val activeController = mockk<MediaController>(relaxed = true)

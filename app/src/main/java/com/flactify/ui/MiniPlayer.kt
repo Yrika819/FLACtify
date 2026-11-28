@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -15,8 +16,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,14 +29,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.NowPlayingUiState
@@ -77,17 +79,17 @@ internal fun MiniPlayer(
 
     Surface(
         modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0xFF29292D),
-        contentColor = Color.White,
-        shadowElevation = 4.dp
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        shadowElevation = 3.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 72.dp)
+            .heightIn(min = 76.dp)
                 .clickable(role = Role.Button, onClickLabel = "フルプレイヤーを開く", onClick = onOpenFullPlayer)
-                .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -97,35 +99,46 @@ internal fun MiniPlayer(
                 description = "$title のアルバムアート"
             )
             androidx.compose.foundation.layout.Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = title,
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = miniPlayerArtistLabel(artist, nowPlaying.playbackState),
-                    color = Color(0xFFCCCCD0),
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            IconButton(
-                onClick = viewModel::playPause,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (nowPlaying.isPlaying) "一時停止" else "再生",
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    androidx.compose.foundation.layout.Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = miniPlayerArtistLabel(artist, nowPlaying.playbackState),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (maxWidth >= 400.dp) {
+                        IconButton(onClick = viewModel::previous, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "前の曲")
+                        }
+                    }
+                    IconButton(onClick = viewModel::next, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.SkipNext, contentDescription = "次の曲")
+                    }
+                    IconButton(onClick = viewModel::playPause, modifier = Modifier.size(48.dp)) {
+                        Icon(
+                            imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (nowPlaying.isPlaying) "一時停止" else "再生",
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -140,7 +153,7 @@ private fun MiniPlayerArtwork(
     Box(
         modifier = Modifier
             .size(48.dp)
-            .clip(RoundedCornerShape(7.dp)),
+            .clip(RoundedCornerShape(9.dp)),
         contentAlignment = Alignment.Center
     ) {
         when {
@@ -157,12 +170,12 @@ private fun MiniPlayerArtwork(
                 contentScale = ContentScale.Crop
             )
             else -> {
-                Surface(color = Color(0xFF414148), shape = RoundedCornerShape(7.dp)) {
+                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(9.dp)) {
                     Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.MusicNote,
                             contentDescription = description,
-                            tint = Color(0xFFDDDEE3),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(26.dp)
                         )
                     }

@@ -22,9 +22,8 @@ internal fun compactArtworkBytes(data: ByteArray?): ByteArray? {
     if (data == null) return null
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    var sampleSize = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > 256) sampleSize *= 2
+    if (!bounds.hasSafeArtworkDimensions()) return null
+    val sampleSize = artworkSampleSize(bounds.outWidth, bounds.outHeight, 256)
     val bitmap = BitmapFactory.decodeByteArray(
         data, 0, data.size,
         BitmapFactory.Options().apply { inSampleSize = sampleSize }
@@ -37,6 +36,24 @@ internal fun compactArtworkBytes(data: ByteArray?): ByteArray? {
     } finally {
         bitmap.recycle()
     }
+}
+
+private const val MAX_ARTWORK_EDGE = 32_768
+private const val MAX_ARTWORK_PIXELS = 100_000_000L
+
+internal fun BitmapFactory.Options.hasSafeArtworkDimensions(): Boolean =
+    outWidth > 0 && outHeight > 0 &&
+        outWidth <= MAX_ARTWORK_EDGE && outHeight <= MAX_ARTWORK_EDGE &&
+        outWidth.toLong() * outHeight.toLong() <= MAX_ARTWORK_PIXELS
+
+internal fun artworkSampleSize(width: Int, height: Int, targetEdge: Int): Int {
+    require(width > 0 && height > 0 && targetEdge > 0)
+    var sampleSize = 1
+    while (maxOf(width, height).toLong() / sampleSize > targetEdge) {
+        if (sampleSize > (1 shl 29)) return 1 shl 30
+        sampleSize *= 2
+    }
+    return sampleSize
 }
 
 /**
@@ -346,10 +363,8 @@ class TrackMetadataExtractor(private val context: Context) {
     private fun decodeArtworkThumbnail(bytes: ByteArray): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val sampleSize = generateSequence(1) { it * 2 }
-            .takeWhile { maxOf(bounds.outWidth, bounds.outHeight) / it > 1024 }
-            .lastOrNull() ?: 1
+        if (!bounds.hasSafeArtworkDimensions()) return null
+        val sampleSize = artworkSampleSize(bounds.outWidth, bounds.outHeight, 1024)
         return BitmapFactory.decodeByteArray(
             bytes, 0, bytes.size,
             BitmapFactory.Options().apply { inSampleSize = sampleSize }

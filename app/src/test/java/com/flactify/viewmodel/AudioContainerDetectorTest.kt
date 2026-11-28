@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 class AudioContainerDetectorTest {
     @Test
@@ -59,6 +60,18 @@ class AudioContainerDetectorTest {
     fun `untagged and corrupt Opus packets fall back without throwing`() {
         assertEquals(null, OpusTags.read(File("src/test/resources/audio/opus_untagged.opus"))["TITLE"])
         assertEquals(emptyMap<String, String>(), OpusTags.read(File("src/test/resources/audio/corrupt.opus")))
+    }
+
+    @Test
+    fun `only a valid front cover picture is exposed as album artwork`() {
+        val image = byteArrayOf(1, 2, 3)
+        val backCover = OpusTags.createFrontCoverPicture(image, 10, 10).also {
+            ByteBuffer.wrap(it).order(ByteOrder.BIG_ENDIAN).putInt(0, 4)
+        }
+        val frontCover = OpusTags.createFrontCoverPicture(image, 10, 10)
+
+        assertNull(OpusTags.decodePicture(Base64.getEncoder().encodeToString(backCover)))
+        assertArrayEquals(image, OpusTags.decodePicture(Base64.getEncoder().encodeToString(frontCover)))
     }
 
     @Test

@@ -7,6 +7,14 @@ internal enum class LibraryBackAction {
     EXIT_LIBRARY
 }
 
+internal sealed interface PlaylistTabContent {
+    data object List : PlaylistTabContent
+    data class Tracks(val playlistId: String) : PlaylistTabContent
+}
+
+internal fun playlistTabContent(showPlaylistContent: String?): PlaylistTabContent =
+    showPlaylistContent?.let { PlaylistTabContent.Tracks(it) } ?: PlaylistTabContent.List
+
 internal fun libraryBackAction(
     selectedTab: String,
     selectedArtist: String?,
