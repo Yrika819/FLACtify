@@ -256,6 +256,12 @@ class PlayerViewModel : ViewModel() {
     // when an older/read-only grant is restored after process death.
     private val _canEditMetadata = MutableStateFlow(false)
     val canEditMetadata: StateFlow<Boolean> = _canEditMetadata
+    private val _tagEditFailureCategory = MutableStateFlow<TagEditFailureCategory?>(null)
+    val tagEditFailureCategory: StateFlow<TagEditFailureCategory?> = _tagEditFailureCategory
+
+    fun clearTagEditFailure() {
+        _tagEditFailureCategory.value = null
+    }
 
     private val _currentPosition = MutableStateFlow(0L)
     val currentPosition: StateFlow<Long> = _currentPosition
@@ -1501,6 +1507,24 @@ class PlayerViewModel : ViewModel() {
         }
     }
 
+    suspend fun tagEditAvailability(context: Context, trackUri: Uri): TagEditFailureCategory? {
+        if (!_canEditMetadata.value) return TagEditFailureCategory.WRITE_ACCESS
+        return withContext(Dispatchers.IO) {
+            try {
+                val input = context.contentResolver.openInputStream(trackUri)
+                    ?: return@withContext TagEditFailureCategory.READ_ACCESS
+                val format = input.use(AudioContainerDetector::sniff)
+                    ?: return@withContext TagEditFailureCategory.UNSUPPORTED_FORMAT
+                if (tagEditor?.supportsFormat(format) == true) null
+                else TagEditFailureCategory.UNSUPPORTED_FORMAT
+            } catch (_: SecurityException) {
+                TagEditFailureCategory.READ_ACCESS
+            } catch (_: Exception) {
+                TagEditFailureCategory.READ_ACCESS
+            }
+        }
+    }
+
     /** Extracted tag-edit body so it can be driven directly by tests without a viewModelScope leak. */
     internal suspend fun performUpdateTrackTags(
         appContext: Context,
@@ -1520,6 +1544,7 @@ class PlayerViewModel : ViewModel() {
         libraryGenerationAtEditStart: Long = libraryGeneration.get()
     ) {
         _isSavingMetadata.value = true
+        _tagEditFailureCategory.value = null
         try {
             val fileExt = metadataExtractor?.fileExtensionCache[trackUri]
                 ?: trackUri.lastPathSegment?.substringAfterLast(".", "tmp")
@@ -1550,6 +1575,9 @@ class PlayerViewModel : ViewModel() {
                     genre, year, composer, albumArtist, discNumber, comment,
                     artBytes, libraryGenerationAtEditStart
                 )
+            } else {
+                _tagEditFailureCategory.value = (result?.exceptionOrNull() as? TagEditFailure)?.category
+                    ?: TagEditFailureCategory.SAVE_FAILED
             }
             onComplete(success)
         } finally {
