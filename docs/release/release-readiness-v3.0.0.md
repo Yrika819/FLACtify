@@ -107,6 +107,4 @@ v3.0.0はOwner個人利用向けです。LGPL relinkとFresh-extraction Complian
 
 Owner Phase 10Cは本番上書き更新後の既存データ保持と主要機能を10/10 PASSと報告しました。Mac側測定reportに署名済みproduction APKのSHA-256/certificate fingerprintがなかったため、signed artifactの値は記録対象外としています。unsigned APKのSHAを署名済みAPKの値として流用していません。
 
-正式source tag `v3.0.0`は安定版文書を含むmain commitを指します。tag target SHAはGit tagと完了報告に記録します。GitHub Release、APK/AAB一般公開、本番署名鍵へのアクセス、Mac/ADB/実機操作は行いません。
-
-本書の作成時点でmainへのmerge、既存PRのclose、署名、本番更新、Mac/ADB/実機操作、個人データ取得、tag、GitHub Release、一般公開は行っていません。
+source tag `v3.0.0`の作成はOwnerが承認済みです。PR #38の文書統合とmain上の必須CI成功後に作成し、target SHAを完了報告へ記録します。GitHub ReleaseやAPK/AAB一般公開、本番署名鍵へのアクセス、追加Mac/ADB/実機操作は行いません。
