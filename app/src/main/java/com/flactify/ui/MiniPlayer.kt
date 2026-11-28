@@ -98,8 +98,8 @@ internal fun MiniPlayer(
                 artworkUri = artworkUri,
                 description = "$title のアルバムアート"
             )
-            androidx.compose.foundation.layout.Column(
             BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val availableWidth = maxWidth
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -123,7 +123,7 @@ internal fun MiniPlayer(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    if (maxWidth >= 400.dp) {
+                    if (availableWidth >= 400.dp) {
                         IconButton(onClick = viewModel::previous, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.SkipPrevious, contentDescription = "前の曲")
                         }
