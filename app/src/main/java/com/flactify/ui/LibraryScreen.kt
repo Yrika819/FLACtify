@@ -52,6 +52,7 @@ import com.flactify.viewmodel.RecommendedTrack
 import com.flactify.viewmodel.TrackData
 import com.flactify.viewmodel.Playlist
 import com.flactify.viewmodel.TagEditFailureCategory
+import com.flactify.viewmodel.decodeArtworkBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -870,6 +871,7 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
     var discNumber by remember { mutableStateOf(track.discNumber ?: "") }
     var comment by remember { mutableStateOf(track.comment ?: "") }
     var selectBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var artworkSelectionError by remember { mutableStateOf(false) }
 
     LaunchedEffect(track.uri, canEditMetadata) {
         formatCheckComplete = false
@@ -879,7 +881,13 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let { try { context.contentResolver.openInputStream(it)?.use { stream -> selectBitmap = BitmapFactory.decodeStream(stream) } } catch (e: Exception) { e.printStackTrace() } }
+        uri?.let { selectedUri ->
+            val bitmap = runCatching {
+                decodeArtworkBitmap(openInput = { context.contentResolver.openInputStream(selectedUri) })
+            }.getOrNull()
+            selectBitmap = bitmap
+            artworkSelectionError = bitmap == null
+        }
     }
 
     AlertDialog(
@@ -889,6 +897,9 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
             Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 tagEditFailureCategory?.let { category ->
                     Text(tagEditFailureMessage(category), color = Color(0xFFFF5252), fontSize = 13.sp)
+                }
+                if (artworkSelectionError) {
+                    Text("画像を読み込めません。別の画像を選んでください。", color = Color(0xFFFFC107), fontSize = 12.sp)
                 }
                 if (!canEditMetadata) {
                     Text(

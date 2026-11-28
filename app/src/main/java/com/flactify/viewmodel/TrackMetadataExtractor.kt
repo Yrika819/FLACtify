@@ -56,6 +56,17 @@ internal fun artworkSampleSize(width: Int, height: Int, targetEdge: Int): Int {
     return sampleSize
 }
 
+/** Opens a selected image twice so its bounds can be checked before allocating a sampled bitmap. */
+internal fun decodeArtworkBitmap(openInput: () -> InputStream?, targetEdge: Int = 2048): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    openInput()?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+    if (!bounds.hasSafeArtworkDimensions()) return null
+    val sampleSize = artworkSampleSize(bounds.outWidth, bounds.outHeight, targetEdge)
+    return openInput()?.use { input ->
+        BitmapFactory.decodeStream(input, null, BitmapFactory.Options().apply { inSampleSize = sampleSize })
+    }
+}
+
 /**
  * What a file declares about its audio format. Nullable fields mean "not reliably known" and
  * are rendered as absent, never as a default.
