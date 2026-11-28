@@ -42,6 +42,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.media3.common.Player
 import com.flactify.PlaybackSettings
+import com.flactify.viewmodel.PlaybackQueueSnapshot
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -106,10 +107,12 @@ fun PlayerScreen(
     val diagnostics by viewModel.diagnostics.collectAsState()
     val trackList by viewModel.trackList.collectAsState()
     val isScanning by viewModel.isScanningArtists.collectAsState()
+    val playbackQueue by viewModel.playbackQueue.collectAsState()
 
     var offsetX by remember { mutableStateOf(0f) }
     var showLyricsSheet by remember { mutableStateOf(false) }
     var showDiagnosticsSheet by remember { mutableStateOf(false) }
+    var showQueueSheet by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -190,6 +193,9 @@ fun PlayerScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { showQueueSheet = true }) {
+                            Icon(Icons.Default.QueueMusic, contentDescription = "再生キュー", tint = Color.White)
+                        }
                         IconButton(onClick = onOpenSettings) {
                             Icon(Icons.Default.Settings, contentDescription = "設定", tint = Color.White)
                         }
@@ -501,6 +507,13 @@ fun PlayerScreen(
                 onDismiss = { showLyricsSheet = false }
             )
         }
+        if (showQueueSheet) {
+            QueueBottomSheet(
+                viewModel = viewModel,
+                queue = playbackQueue,
+                onDismiss = { showQueueSheet = false }
+            )
+        }
     }
 }
 
@@ -705,6 +718,143 @@ private fun formatOffset(offsetMs: Long): String = when {
     offsetMs == 0L -> "0.0s"
     offsetMs < 0L -> "−${String.format(java.util.Locale.US, "%.1f", -offsetMs / 1000.0)}s"
     else -> "+${String.format(java.util.Locale.US, "%.1f", offsetMs / 1000.0)}s"
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun QueueBottomSheet(
+    viewModel: PlayerViewModel,
+    queue: PlaybackQueueSnapshot,
+    onDismiss: () -> Unit
+) {
+    var showSaveDialog by remember { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF1A1A1A)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .padding(horizontal = 20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("再生キュー", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                TextButton(
+                    onClick = { showSaveDialog = true },
+                    enabled = queue.items.isNotEmpty()
+                ) {
+                    Text("プレイリストに保存", color = Color(0xFF1DB954))
+                }
+            }
+            if (queue.shuffleEnabled) {
+                Text(
+                    "シャッフル中は「次に再生」と並び替えを無効にしています。",
+                    color = Color(0x99FFFFFF),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+            if (queue.items.isEmpty()) {
+                Text("キューは空です", color = Color(0x99FFFFFF), modifier = Modifier.padding(vertical = 24.dp))
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    itemsIndexed(queue.items) { index, item ->
+                        val isCurrent = index == queue.currentIndex
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isCurrent) Color(0x2233CC66) else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title.ifEmpty { "不明" },
+                                    color = if (isCurrent) Color(0xFF1DB954) else Color.White,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = item.artist.ifEmpty { "不明なアーティスト" },
+                                    color = Color(0x99FFFFFF),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.moveQueueItem(index, index - 1) },
+                                enabled = !queue.shuffleEnabled && index > 0
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "上へ", tint = Color.White)
+                            }
+                            IconButton(
+                                onClick = { viewModel.moveQueueItem(index, index + 1) },
+                                enabled = !queue.shuffleEnabled && index < queue.items.lastIndex
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "下へ", tint = Color.White)
+                            }
+                            IconButton(
+                                onClick = { viewModel.removeQueueItem(index) },
+                                enabled = !isCurrent
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = if (isCurrent) "再生中の曲は削除できません" else "キューから削除",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (showSaveDialog) {
+        SaveQueueDialog(
+            onDismiss = { showSaveDialog = false },
+            onSave = { name ->
+                val saved = viewModel.savePlaybackQueueAsPlaylist(name)
+                if (saved) showSaveDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun SaveQueueDialog(
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("キューを保存") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("プレイリスト名") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(name) }, enabled = name.trim().isNotEmpty()) {
+                Text("保存")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
+    )
 }
 
 private fun formatTime(ms: Long): String {

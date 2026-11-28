@@ -48,7 +48,10 @@ internal object LrcParser {
     fun parseDetailed(raw: String?): List<LrcLine> {
         if (raw.isNullOrEmpty()) return emptyList()
 
-        val lines = raw.removePrefix("\uFEFF").lineSequence().toList()
+        // Lyrics are external metadata. Bound both dimensions before materializing line and
+        // timestamp collections so a corrupt tag cannot turn parsing into an unbounded allocation.
+        val boundedRaw = raw.take(MAX_INPUT_CHARS).removePrefix("\uFEFF")
+        val lines = boundedRaw.lineSequence().take(MAX_LINES).toList()
         val offsetMs = lines.asSequence()
             .mapNotNull { line ->
                 offsetTag.matchEntire(line.trim())?.groupValues?.getOrNull(1)?.toLongOrNull()
@@ -182,4 +185,7 @@ internal object LrcParser {
         val words: List<LrcWord>,
         val sourceOrder: Int
     )
+
+    private const val MAX_INPUT_CHARS = 1_000_000
+    private const val MAX_LINES = 100_000
 }

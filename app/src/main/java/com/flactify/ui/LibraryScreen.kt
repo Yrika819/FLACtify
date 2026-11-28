@@ -409,7 +409,9 @@ fun LibraryScreen(
                                     onTrackLongClick = { editingTrack = it },
                                     onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) },
                                     onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) },
-                                    onAddToPlaylist = {}
+                                    onAddToPlaylist = {},
+                                    onEnqueueEnd = { viewModel.enqueueAtEnd(it) },
+                                    onEnqueueNext = { viewModel.enqueueNext(it) }
                                 )
                             }
                         }
@@ -443,7 +445,7 @@ fun LibraryScreen(
                             } else {
                                 val filteredSongs = sortTracks(filterTracks(artistMap[selectedArtist] ?: emptyList()))
                                 SongListHeader(isShuffleMode, repeatMode, viewModel)
-                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playArtistTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playArtistTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it }, onEnqueueEnd = { viewModel.enqueueAtEnd(it) }, onEnqueueNext = { viewModel.enqueueNext(it) })
                             }
                         }
                         "albums" -> {
@@ -473,11 +475,11 @@ fun LibraryScreen(
                             } else {
                                 val filteredSongs = sortTracks(filterTracks(albumMap[selectedAlbum] ?: emptyList()))
                                 SongListHeader(isShuffleMode, repeatMode, viewModel)
-                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAlbumTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                                SongLazyColumn(songs = filteredSongs, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAlbumTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it }, onEnqueueEnd = { viewModel.enqueueAtEnd(it) }, onEnqueueNext = { viewModel.enqueueNext(it) })
                             }
                         }
                         else -> {
-                            SongLazyColumn(songs = allSongsList, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it })
+                            SongLazyColumn(songs = allSongsList, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = { showPlaylistPicker = it }, onEnqueueEnd = { viewModel.enqueueAtEnd(it) }, onEnqueueNext = { viewModel.enqueueNext(it) })
                         }
                         }
                     }
@@ -788,12 +790,15 @@ private fun SongListHeader(isShuffleMode: Boolean, repeatMode: Int, viewModel: P
 private fun SongLazyColumn(
     songs: List<TrackData>, viewModel: PlayerViewModel,
     onTrackLongClick: (TrackData) -> Unit, onFavoriteClick: (TrackData) -> Unit,
-    onPlayAction: (Context, List<TrackData>, Int) -> Unit, onAddToPlaylist: (TrackData) -> Unit
+    onPlayAction: (Context, List<TrackData>, Int) -> Unit, onAddToPlaylist: (TrackData) -> Unit,
+    onEnqueueEnd: (TrackData) -> Unit, onEnqueueNext: (TrackData) -> Unit
 ) {
     val context = LocalContext.current
     val favorites by viewModel.favorites.collectAsState()
+    val playbackQueue by viewModel.playbackQueue.collectAsState()
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         itemsIndexed(songs) { idx, trackData ->
+            var showQueueMenu by remember(trackData.uri) { mutableStateOf(false) }
             Row(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0x12FFFFFF))
                     .combinedClickable(
@@ -828,6 +833,39 @@ private fun SongLazyColumn(
                 // ── Add to playlist button ──
                 IconButton(onClick = { onAddToPlaylist(trackData) }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.PlaylistAdd, contentDescription = "プレイリストに追加", tint = Color(0x44FFFFFF), modifier = Modifier.size(20.dp))
+                }
+                Box {
+                    IconButton(onClick = { showQueueMenu = true }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.QueueMusic, contentDescription = "再生キューに追加", tint = Color(0x44FFFFFF), modifier = Modifier.size(20.dp))
+                    }
+                    DropdownMenu(
+                        expanded = showQueueMenu,
+                        onDismissRequest = { showQueueMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (playbackQueue.shuffleEnabled) {
+                                        "次に再生（シャッフル中は無効）"
+                                    } else {
+                                        "次に再生"
+                                    }
+                                )
+                            },
+                            enabled = !playbackQueue.shuffleEnabled && playbackQueue.currentIndex >= 0,
+                            onClick = {
+                                onEnqueueNext(trackData)
+                                showQueueMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("キューの最後に追加") },
+                            onClick = {
+                                onEnqueueEnd(trackData)
+                                showQueueMenu = false
+                            }
+                        )
+                    }
                 }
             }
         }

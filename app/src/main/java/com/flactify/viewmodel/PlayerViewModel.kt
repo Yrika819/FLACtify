@@ -242,6 +242,10 @@ class PlayerViewModel : ViewModel() {
     private val _trackList = MutableStateFlow<List<String>>(emptyList())
     val trackList: StateFlow<List<String>> = _trackList
 
+    /** Projection of the service-owned Media3 queue for queue surfaces; never used as playback state. */
+    private val _playbackQueue = MutableStateFlow(PlaybackQueueSnapshot())
+    val playbackQueue: StateFlow<PlaybackQueueSnapshot> = _playbackQueue
+
     private val _artistMap = MutableStateFlow<Map<String, List<TrackData>>>(emptyMap())
     val artistMap: StateFlow<Map<String, List<TrackData>>> = _artistMap
 
@@ -496,9 +500,15 @@ class PlayerViewModel : ViewModel() {
             },
             onSessionConnectionChanged = { connection, generation ->
                 updateSessionConnection(connection, generation)
+                if (connection != SessionConnectionState.CONNECTED) {
+                    _playbackQueue.value = PlaybackQueueSnapshot()
+                }
             },
             onAuthoritativeSnapshot = { mediaController, generation ->
                 resynchronizeNowPlayingState(mediaController, generation, appContext)
+            },
+            onQueueChanged = { snapshot ->
+                _playbackQueue.value = snapshot
             }
         )
         playbackController?.initialize(
@@ -1464,6 +1474,38 @@ class PlayerViewModel : ViewModel() {
             }
         }
         controller?.seekToNext()
+    }
+
+    fun enqueueNext(track: TrackData): QueueActionResult =
+        playbackController?.enqueueNext(
+            track,
+            fileExtension = { metadataExtractor?.fileExtensionCache[it] ?: "flac" },
+            mimeType = ::getMimeTypeForExtension
+        ) ?: QueueActionResult.NO_CONTROLLER
+
+    fun enqueueAtEnd(track: TrackData): QueueActionResult =
+        playbackController?.enqueueAtEnd(
+            track,
+            fileExtension = { metadataExtractor?.fileExtensionCache[it] ?: "flac" },
+            mimeType = ::getMimeTypeForExtension
+        ) ?: QueueActionResult.NO_CONTROLLER
+
+    fun removeQueueItem(index: Int): QueueActionResult =
+        playbackController?.removeQueueItem(index) ?: QueueActionResult.NO_CONTROLLER
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int): QueueActionResult =
+        playbackController?.moveQueueItem(fromIndex, toIndex) ?: QueueActionResult.NO_CONTROLLER
+
+    /** Saves the current MediaController queue, not a separately cached UI list, as a playlist. */
+    fun savePlaybackQueueAsPlaylist(name: String): Boolean {
+        val normalizedName = name.trim()
+        val uris = playbackController?.queueMediaIds().orEmpty()
+        if (normalizedName.isEmpty() || uris.isEmpty()) return false
+        userLibraryController?.savePlaylist(
+            Playlist(name = normalizedName, trackUris = uris)
+        ) ?: return false
+        refreshPlaylists()
+        return true
     }
 
     fun previous() {

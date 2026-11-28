@@ -59,4 +59,12 @@ class LrcParserTest {
         assertEquals(listOf(1_000L to "good"), result)
         assertTrue(result.none { it.second == "bad" })
     }
+
+    @Test
+    fun `oversized documents are bounded before line materialization`() {
+        val result = LrcParser.parse("[00:00.00]x\n".repeat(150_000))
+
+        assertTrue(result.size < 150_000)
+        assertTrue(result.size <= 100_000)
+    }
 }
