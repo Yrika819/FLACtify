@@ -15,7 +15,6 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
-import java.util.regex.Pattern
 
 /** Compact embedded cover art before retaining it in every in-memory TrackData instance. */
 internal fun compactArtworkBytes(data: ByteArray?): ByteArray? {
@@ -473,26 +472,6 @@ class TrackMetadataExtractor(private val context: Context) {
     }
 
     private fun parseLyrics(raw: String?): List<Pair<Long, String>> {
-        if (raw == null) return emptyList()
-        val timed = mutableListOf<Pair<Long, String>>()
-        val untimed = mutableListOf<Pair<Long, String>>()
-        val pattern = Pattern.compile("\\[(\\d+):(\\d+)[\\.:](\\d+)\\](.*)")
-        raw.lines().forEach { line ->
-            val matcher = pattern.matcher(line)
-            if (matcher.find()) {
-                val m = matcher.group(1)?.toLong() ?: 0L
-                val s = matcher.group(2)?.toLong() ?: 0L
-                val ms = matcher.group(3)?.toLong() ?: 0L
-                val text = matcher.group(4)?.trim().orEmpty()
-                if (text.isNotEmpty()) timed.add(((m * 60000) + (s * 1000) + ms) to text)
-            } else {
-                val text = line.trim()
-                if (text.isNotEmpty() && !text.startsWith("[")) untimed.add(-1L to text)
-            }
-        }
-        // Keep ordinary (non-LRC) lyric tags instead of silently dropping them.
-        // Untimed lines are placed after timed lines and remain available in the
-        // expanded lyrics view.
-        return timed.sortedBy { it.first } + untimed
+        return LrcParser.parse(raw)
     }
 }
