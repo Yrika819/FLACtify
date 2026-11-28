@@ -2,7 +2,7 @@
 
 **判断：BLOCKED — production Release APKは未生成**
 
-この候補は、Owner実機評価済みPR #35 HEADからのリリースメタデータ準備です。レビューでHIGHのデータ保全不具合が特定されたため、実装・ビルド・公開へ進みません。
+この候補は、Owner実機評価済みPR #35 HEADからのリリースメタデータ準備です。レビューでHIGHのデータ保全不具合が特定されたため、公式production Releaseの実装継続・ビルド・公開へは進みません。後述のローカル非production検証variantは実行済みですが、公式unsigned production Release APKは未生成です。
 
 ## 基点と差分
 
@@ -13,7 +13,7 @@
 - 基点Owner提示APK：FoundationClosure、SHA-256 `9f16c65c16906015296de9183524239475df7bdfd423406f82799bab93928f62`
 - 候補の意図した製品設定：`com.flactify`, versionName `3.0.0`, versionCode `18`
 
-評価済みsourceとの差分はdefault versionName/versionCodeとリリース用文書に限定します。製品動作コードは変更しません。これらの候補変更は未コミットであり、新しいHEAD/treeはまだありません。評価済みAPKのSHAを候補APKのハッシュとして扱ってはいけません。
+評価済みsourceとの差分はdefault versionName/versionCodeとリリース用文書に限定します。製品動作コードは変更しません。候補準備は`release/v3.0.0-candidate`へコミット済みです。正確な最終HEAD/treeはdelivery recordで特定し、本書では自己参照になるため記載しません。評価済みAPKのSHAを候補APKのハッシュとして扱ってはいけません。
 
 versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候補18は単調増加です。正式リリース前に最終ブランチとversion設定を再確認します。
 
@@ -31,7 +31,7 @@ versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候
 - v2.5.2 Owner受理済み署名APK SHA-256：`aca14135a9d40a9ac780f24e9792e4e4ac00e7b3a13e6a08e4beb2b7b8d9f3eb`。
 - 上書き更新には、同一applicationIdに加えて、既存インストールと一致する本番署名証明書が必要です。今回生成可能なCloud APKは未署名です。本番鍵はCloudに持ち込まず、現時点でインストール可能なRelease APKはありません。
 - 通常のin-place updateではアプリデータを保持する想定ですが、バックアップ不具合を解消した後、最終署名APKと既存アプリの更新をOwnerが確認するまでデータ保持を実測済みとは扱いません。SAF grantの維持もOS管理状態として実機確認対象です。
-- v3 versionCodeからv2.5.2へ戻すダウングレードは保証しません。失敗時はアプリをアンインストールしたりデータ消去したりせず停止し、必要に応じてアプリ内バックアップから修正版へ復元します。旧署名APKを保全しても、AndroidはversionCodeの低いAPKへの通常上書きを拒否する場合があります。
+- v3 versionCodeからv2.5.2へ戻すダウングレードは保証しません。失敗時はアプリをアンインストールしたりデータ消去したりせず停止してください。再生統計復元のHIGH blockerが修正・確認されるまでは、復旧目的であってもアプリ内バックアップ復元を推奨・実行しません。旧署名APKを保全しても、AndroidはversionCodeの低いAPKへの通常上書きを拒否する場合があります。
 
 ## 既知の制約とリリース上の扱い
 
@@ -65,8 +65,12 @@ versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候
 
 - PR #35の評価済みHEAD `e03dcd9`：499 JVM tests、Android validation、CodeQL Java/KotlinおよびC/C++、LGPL relink、Fresh-extraction ComplianceがPASSした記録あり。
 - Owner評価：Phase 9A 8/8、Phase 9B 8/8、Phase 9C 21/21 PASS。Owner報告では不具合なし。Phase 9B Owner提示APK SHAは上記基点に記載。
-- Owner評価は実機証拠、CIはCloud証拠である。候補version metadata変更後のCIは未実施であり、release-build/R8、16 KiB、署名 payload、production applicationIdの最終確認も未実施。
-- 正式なunsigned production Release APKは**BLOCKED / NOT GENERATED**。
+- Owner評価は実機証拠、CIはCloud証拠であり、区別して扱う。
+- 候補ブランチのローカルCloud検証は次のコマンドでPASS：`./gradlew test lint assembleDebug assembleReleaseValidation assembleFoundationClosure compileDebugAndroidTestKotlin`。
+- この実行では499 JVM tests、Gradle test lifecycle、lint、Debug、ReleaseValidation/R8、FoundationClosure build、およびinstrumentation compileが成功した。Debug、ReleaseValidation、FoundationClosure APKのZIP alignmentとnative ELF 16 KiB alignmentもPASS。
+- ReleaseValidationのapplicationIdは`com.flactify.releasevalidation`であり、production IDの`com.flactify` Release APKではない。この検証をproduction Release artifactの検証済み扱いにしない。
+- 候補ブランチに対するGitHub candidate PR CI結果はまだない。上記はローカルCloud実行結果であり、GitHub CIやOwner実機結果として報告しない。
+- versionCode 18のproduction-ID unsigned Release APK、署名payload、production applicationIdを持つ最終APKの確認は未実施。stats restore blocker解消前のため、公式unsigned production Release APKは**BLOCKED / NOT GENERATED**。
 
 ## 独立レビュー観点と現時点の判定
 
@@ -77,9 +81,9 @@ versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候
 | Tag edit audio safety | Owner evidence exists for recent phases; candidate release install UNVERIFIED | v3 release packageの署名・R8後APKでのOwner操作は未実施。 |
 | Backup / restore | BLOCKED | play stats schema mismatchを確認。お気に入り・playlist以外も含むrestore successを一括で安全と主張できない。 |
 | MediaSession security | Baseline source review/CI only; no new finding documented here | v3 binary or device command-surface reviewは未実施。 |
-| Dependencies / licenses | BASELINE PASS at PR #35 HEAD; candidate rerun pending | PR #35でLGPL relink、Fresh-extraction Compliance、CodeQLがPASS。版番号のみの候補treeに対するfinal workflowは未実施。 |
-| Release/R8/resources | BASELINE PASS, candidate production Release UNVERIFIED | PR #35 ReleaseValidation/R8はPASS。versionCode 18 candidateのproduction-ID Release APKは未生成。 |
-| APK ZIP / native 16 KiB | BASELINE PASS, candidate production Release UNVERIFIED | PR #35 candidate APK checks passed; current production Release output does not exist. |
+| Dependencies / licenses | BASELINE PASS at PR #35 HEAD; candidate GitHub rerun pending | PR #35でLGPL relink、Fresh-extraction Compliance、CodeQLがPASS。candidateブランチのGitHub CIは未実施。 |
+| Release/R8/resources | Local candidate ReleaseValidation/R8 PASS; production Release BLOCKED | ReleaseValidation APKは`.releasevalidation` suffix付きでproduction IDではない。versionCode 18のproduction Release APKは未生成。 |
+| APK ZIP / native 16 KiB | Local candidate Debug/ReleaseValidation/FoundationClosure PASS; production Release UNVERIFIED | 3 variantでalignmentを確認。production-ID unsigned Release APKは存在しない。 |
 | Instrumentation / screenshots / device performance | UNVERIFIED / not measured | Compile is not execution; product-screen screenshot automation, PSS, jank, and frame time are not established. |
 
 ## リリース再開条件
