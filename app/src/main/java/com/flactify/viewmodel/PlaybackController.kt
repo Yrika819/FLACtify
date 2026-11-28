@@ -393,6 +393,8 @@ class PlaybackController(
     }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
+    fun hasNextMediaItem(): Boolean = player?.hasNextMediaItem() == true
+    fun hasPreviousMediaItem(): Boolean = player?.hasPreviousMediaItem() == true
     fun setShuffle(enabled: Boolean) {
         // The service starts the round from onShuffleModeEnabledChanged, which also covers
         // notification/Bluetooth/other-controller changes. Sending a command here as well made

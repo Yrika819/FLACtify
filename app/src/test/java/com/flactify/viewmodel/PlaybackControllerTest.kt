@@ -46,6 +46,17 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `queue adjacency checks follow Media3 boundary state`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.hasNextMediaItem() } returns false
+        every { player.hasPreviousMediaItem() } returns true
+        val controller = newController(player)
+
+        assertTrue(!controller.hasNextMediaItem())
+        assertTrue(controller.hasPreviousMediaItem())
+    }
+
+    @Test
     fun `callbacks from replaced controller are ignored`() {
         val oldController = mockk<MediaController>(relaxed = true)
         val activeController = mockk<MediaController>(relaxed = true)
