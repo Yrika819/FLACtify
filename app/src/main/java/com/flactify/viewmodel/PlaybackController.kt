@@ -379,7 +379,7 @@ class PlaybackController(
         )
     }
 
-    fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun playPause() { player?.let { if (it.playWhenReady) it.pause() else it.play() } }
     fun seekTo(position: Long) {
         player?.let { mediaController ->
             // Unknown duration is not a zero-length item: only clamp when the duration is known.
