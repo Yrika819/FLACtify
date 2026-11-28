@@ -11,9 +11,9 @@ import java.util.Base64
 
 /** Bounded reader for the OpusTags packet (RFC 7845); malformed metadata is ignored. */
 internal object OpusTags {
-    private const val MAX_PACKET_BYTES = 1_048_576
+    private const val MAX_PACKET_BYTES = 16 * 1_048_576
     private const val MAX_TAGS = 4096
-    private const val MAX_ENCODED_PICTURE_CHARS = 1_398_104
+    private const val MAX_ENCODED_PICTURE_CHARS = 22_369_622
 
     fun read(file: File): Map<String, String> = try {
         FileInputStream(file).use(::read)
@@ -76,6 +76,113 @@ internal object OpusTags {
         if (length < 0 || length > buffer.remaining()) null else ByteArray(length).also(buffer::get)
     } catch (_: Exception) {
         null
+    }
+
+    /** Replaces only the fields edited in the dialog, keeping all other comments and suffix data. */
+    fun updatePacket(
+        packet: ByteArray,
+        fields: Map<String, String?>,
+        frontCoverJpeg: ByteArray?
+    ): ByteArray {
+        require(packet.size in 16..MAX_PACKET_BYTES) { "Invalid OpusTags packet size" }
+        require(packet.copyOfRange(0, 8).contentEquals("OpusTags".toByteArray(Charsets.US_ASCII))) {
+            "Invalid OpusTags signature"
+        }
+
+        val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.position(8)
+        val vendorLength = readLength(buffer)
+        require(vendorLength <= buffer.remaining()) { "Invalid OpusTags vendor length" }
+        val vendor = ByteArray(vendorLength).also(buffer::get)
+        val count = readLength(buffer)
+        require(count <= MAX_TAGS) { "Too many OpusTags comments" }
+        val comments = ArrayList<ByteArray>(count + fields.size + if (frontCoverJpeg != null) 1 else 0)
+        repeat(count) {
+            val length = readLength(buffer)
+            require(length <= buffer.remaining()) { "Invalid OpusTags comment length" }
+            comments += ByteArray(length).also(buffer::get)
+        }
+        val trailingData = ByteArray(buffer.remaining()).also(buffer::get)
+
+        val normalizedFields = fields.mapKeys { it.key.uppercase() }
+        comments.removeAll { raw -> raw.keyOrNull()?.let(normalizedFields::containsKey) == true }
+        normalizedFields.forEach { (key, value) ->
+            if (!value.isNullOrBlank()) {
+                require(key.isNotBlank() && key.all { it.code in 0x20..0x7d && it != '=' })
+                comments += "$key=$value".toByteArray(Charsets.UTF_8)
+            }
+        }
+
+        if (frontCoverJpeg != null) {
+            comments.removeAll { raw ->
+                raw.keyOrNull() == "METADATA_BLOCK_PICTURE" && raw.isFrontCoverPictureComment()
+            }
+            comments += "METADATA_BLOCK_PICTURE=${encodePicture(frontCoverJpeg)}".toByteArray(Charsets.UTF_8)
+        }
+        require(comments.size <= MAX_TAGS) { "Too many OpusTags comments" }
+
+        val output = ByteArrayOutputStream(minOf(MAX_PACKET_BYTES, packet.size + 1024))
+        output.write("OpusTags".toByteArray(Charsets.US_ASCII))
+        output.writeLittleEndianInt(vendor.size)
+        output.write(vendor)
+        output.writeLittleEndianInt(comments.size)
+        comments.forEach { comment ->
+            output.writeLittleEndianInt(comment.size)
+            output.write(comment)
+        }
+        output.write(trailingData)
+        return output.toByteArray().also {
+            require(it.size <= MAX_PACKET_BYTES) { "OpusTags packet exceeds the safe size limit" }
+        }
+    }
+
+    fun createFrontCoverPicture(jpeg: ByteArray, width: Int, height: Int): ByteArray {
+        require(jpeg.isNotEmpty())
+        val mime = "image/jpeg".toByteArray(Charsets.US_ASCII)
+        val output = ByteArrayOutputStream(jpeg.size + 40)
+        output.writeBigEndianInt(3) // front cover
+        output.writeBigEndianInt(mime.size)
+        output.write(mime)
+        output.writeBigEndianInt(0) // empty description
+        output.writeBigEndianInt(width)
+        output.writeBigEndianInt(height)
+        output.writeBigEndianInt(24) // JPEG truecolor
+        output.writeBigEndianInt(0) // no indexed colors
+        output.writeBigEndianInt(jpeg.size)
+        output.write(jpeg)
+        return output.toByteArray()
+    }
+
+    private fun encodePicture(picture: ByteArray): String =
+        Base64.getEncoder().encodeToString(picture)
+
+    private fun ByteArray.keyOrNull(): String? {
+        val separator = indexOf('='.code.toByte())
+        if (separator <= 0) return null
+        return String(this, 0, separator, Charsets.US_ASCII).uppercase()
+    }
+
+    private fun ByteArray.isFrontCoverPictureComment(): Boolean = try {
+        val separator = indexOf('='.code.toByte())
+        val encoded = String(this, separator + 1, size - separator - 1, Charsets.US_ASCII)
+        val picture = Base64.getDecoder().decode(encoded)
+        picture.size >= 4 && ByteBuffer.wrap(picture).order(ByteOrder.BIG_ENDIAN).int == 3
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun ByteArrayOutputStream.writeLittleEndianInt(value: Int) {
+        write(value and 0xff)
+        write((value ushr 8) and 0xff)
+        write((value ushr 16) and 0xff)
+        write((value ushr 24) and 0xff)
+    }
+
+    private fun ByteArrayOutputStream.writeBigEndianInt(value: Int) {
+        write((value ushr 24) and 0xff)
+        write((value ushr 16) and 0xff)
+        write((value ushr 8) and 0xff)
+        write(value and 0xff)
     }
 
     private fun parseComments(packet: ByteArray): Map<String, String> {

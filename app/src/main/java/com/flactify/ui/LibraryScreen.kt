@@ -51,6 +51,7 @@ import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.RecommendedTrack
 import com.flactify.viewmodel.TrackData
 import com.flactify.viewmodel.Playlist
+import com.flactify.viewmodel.TagEditFailureCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -828,12 +829,25 @@ private fun SongLazyColumn(
     }
 }
 
+private fun tagEditFailureMessage(category: TagEditFailureCategory): String = when (category) {
+    TagEditFailureCategory.UNSUPPORTED_FORMAT -> "この音源形式のタグ保存は未対応です。音源は変更されていません。"
+    TagEditFailureCategory.READ_ACCESS -> "音源を読み取れません。フォルダのアクセス権を確認してください。"
+    TagEditFailureCategory.WRITE_ACCESS -> "保存先への書き込みが許可されていません。フォルダを選び直して書き込みを許可してください。"
+    TagEditFailureCategory.RECOVERY_COPY -> "復旧コピーを作成・確認できませんでした。音源は変更されていません。"
+    TagEditFailureCategory.VERIFY_RESTORED -> "保存後の確認に失敗したため、元の音源を復元して確認しました。"
+    TagEditFailureCategory.RECOVERY_REQUIRED -> "保存後の確認に失敗しました。復旧コピーを保持しています。"
+    TagEditFailureCategory.SAVE_FAILED -> "タグの保存に失敗しました。音源への変更は確認できていません。"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () -> Unit) {
     val isSavingMetadata by viewModel.isSavingMetadata.collectAsState()
     val canEditMetadata by viewModel.canEditMetadata.collectAsState()
+    val tagEditFailureCategory by viewModel.tagEditFailureCategory.collectAsState()
     val context = LocalContext.current
+    var formatAvailability by remember(track.uri) { mutableStateOf<TagEditFailureCategory?>(null) }
+    var formatCheckComplete by remember(track.uri) { mutableStateOf(false) }
     var title by remember { mutableStateOf(track.title) }
     var artist by remember { mutableStateOf(track.artist) }
     var album by remember { mutableStateOf(track.album) }
@@ -845,7 +859,13 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
     var discNumber by remember { mutableStateOf(track.discNumber ?: "") }
     var comment by remember { mutableStateOf(track.comment ?: "") }
     var selectBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var saveError by remember { mutableStateOf(false) }
+
+    LaunchedEffect(track.uri, canEditMetadata) {
+        formatCheckComplete = false
+        viewModel.clearTagEditFailure()
+        formatAvailability = viewModel.tagEditAvailability(context, track.uri)
+        formatCheckComplete = true
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { try { context.contentResolver.openInputStream(it)?.use { stream -> selectBitmap = BitmapFactory.decodeStream(stream) } } catch (e: Exception) { e.printStackTrace() } }
@@ -856,12 +876,20 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
         title = { Text("楽曲情報の編集", color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (saveError) {
-                    Text("保存に失敗しました", color = Color(0xFFFF5252), fontSize = 13.sp)
+                tagEditFailureCategory?.let { category ->
+                    Text(tagEditFailureMessage(category), color = Color(0xFFFF5252), fontSize = 13.sp)
                 }
                 if (!canEditMetadata) {
                     Text(
                         "このフォルダは読み取り専用です。タグを保存するには、フォルダをもう一度選択して書き込み権限を許可してください。",
+                        color = Color(0xFFFFC107),
+                        fontSize = 12.sp
+                    )
+                } else if (!formatCheckComplete) {
+                    Text("音源形式を確認しています…", color = Color.LightGray, fontSize = 12.sp)
+                } else if (formatAvailability != null) {
+                    Text(
+                        tagEditFailureMessage(formatAvailability!!),
                         color = Color(0xFFFFC107),
                         fontSize = 12.sp
                     )
@@ -887,8 +915,8 @@ fun TrackEditDialog(track: TrackData, viewModel: PlayerViewModel, onDismiss: () 
         },
         confirmButton = {
             Button(
-                onClick = { saveError = false; viewModel.updateTrackTags(context = context, trackUri = track.uri, title = title, artist = artist, album = album, trackNumber = trackNumber, genre = genre.takeIf { it.isNotBlank() }, year = year.takeIf { it.isNotBlank() }, composer = composer.takeIf { it.isNotBlank() }, albumArtist = albumArtist.takeIf { it.isNotBlank() }, discNumber = discNumber.takeIf { it.isNotBlank() }, comment = comment.takeIf { it.isNotBlank() }, artworkBitmap = selectBitmap) { if (it) { saveError = false; onDismiss() } else { saveError = true } } },
-                enabled = !isSavingMetadata && canEditMetadata,
+                onClick = { viewModel.updateTrackTags(context = context, trackUri = track.uri, title = title, artist = artist, album = album, trackNumber = trackNumber, genre = genre.takeIf { it.isNotBlank() }, year = year.takeIf { it.isNotBlank() }, composer = composer.takeIf { it.isNotBlank() }, albumArtist = albumArtist.takeIf { it.isNotBlank() }, discNumber = discNumber.takeIf { it.isNotBlank() }, comment = comment.takeIf { it.isNotBlank() }, artworkBitmap = selectBitmap) { if (it) onDismiss() } },
+                enabled = !isSavingMetadata && canEditMetadata && formatCheckComplete && formatAvailability == null,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DB954))
             ) {
                 if (isSavingMetadata) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)

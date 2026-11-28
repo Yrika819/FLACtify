@@ -13,6 +13,7 @@ import java.io.IOException
 import java.io.OutputStream
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -60,6 +61,27 @@ class TagEditorTest {
         )
 
         assertFalse(result.isSuccess)
+        assertTrue(File(tempCacheDir, "flactify-work").listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `unknown source is rejected before recovery or output begins`() = runTest {
+        val context = mockk<Context>()
+        val resolver = mockk<ContentResolver>()
+        val uri = mockk<Uri>()
+        every { context.cacheDir } returns tempCacheDir
+        every { context.contentResolver } returns resolver
+        every { resolver.openInputStream(uri) } answers { ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)) }
+
+        val result = TagEditor().updateTrackTags(
+            context,
+            uri,
+            TagEditRequest("曲", "演者", "盤", "", null, null, null, null, null, null, null),
+            "opus"
+        )
+
+        assertFalse(result.isSuccess)
+        assertEquals(TagEditFailureCategory.UNSUPPORTED_FORMAT, (result.exceptionOrNull() as TagEditFailure).category)
         assertTrue(File(tempCacheDir, "flactify-work").listFiles().orEmpty().isEmpty())
     }
 
@@ -155,5 +177,43 @@ class TagEditorTest {
         }.exceptionOrNull()
 
         assertTrue(error is IOException)
+    }
+
+    @Test
+    fun `recovery copy restores a partially replaced document and verifies it`() {
+        val recovery = File(tempCacheDir, "recovery.flac").apply { writeBytes(byteArrayOf(8, 7, 6, 5, 4)) }
+        var destination = byteArrayOf(1, 2)
+        var writes = 0
+
+        restoreSafDocumentAndVerify(
+            recoveryFile = recovery,
+            openOutput = {
+                writes++
+                object : ByteArrayOutputStream() {
+                    override fun close() {
+                        destination = toByteArray()
+                        super.close()
+                    }
+                }
+            },
+            openInput = { ByteArrayInputStream(destination) }
+        )
+
+        assertTrue(destination.contentEquals(byteArrayOf(8, 7, 6, 5, 4)))
+        assertTrue(writes == 1)
+    }
+
+    @Test
+    fun `tag editor advertises Opus and supported standard containers only`() {
+        val editor = TagEditor()
+
+        assertTrue(editor.supportsFormat("opus"))
+        assertTrue(editor.supportsFormat("ogg"))
+        assertTrue(editor.supportsFormat("flac"))
+        assertTrue(editor.supportsFormat("mp3"))
+        assertTrue(editor.supportsFormat("m4a"))
+        assertTrue(editor.supportsFormat("wav"))
+        assertFalse(editor.supportsFormat("aac"))
+        assertFalse(editor.supportsFormat("unknown"))
     }
 }
