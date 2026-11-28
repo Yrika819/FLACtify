@@ -1,119 +1,94 @@
-# v3.0.0 リリース前確認報告
+# FLACtify v3.0.0 最終リリース判定資料
 
-## 最新更新 — Phase 10A-R1
+## 判定
 
-2026-11-28時点の候補はDraft PR #37（`main` base、`fix/v3.0.0-stats-restore-p0`）です。元の候補PR #36とbranchは保全しています。
+**READY_FOR_OWNER_RELEASE_APPROVAL — Ownerの最終署名・リリース承認待ち**
 
-- 指定された候補HEAD `4bfebeaa8dd872b0880fdbb85c87ceb18da45440` / tree `50292d79144c27b0cdfc5cdcf7fd83519dbad47e`を基点に、再生統計のP0データ損失を修正しました。
-- 現行修正HEAD `96035f9027cc6abc782184d989642ae44442ab12` / tree `cd3e7c85fd77bc3d10f7dbd4db4f7c550c77f931`。独立レビュー（GPT-6 Luna High）はP0/P1の残存ブロッカーなしと判定しました。
-- 最終HEADのAndroid validation、CodeQL、LGPL relink、Fresh-extraction ComplianceはPR #37のGitHub checksで確認します。以前のHEADやローカル結果を最終HEADのCI成功として扱いません。
-- FoundationClosure APKと合成fixtureをOwner限定Driveへ引き渡し済みです。APKはデバッグ署名・試験用IDで、production APKではありません。
-- Gate 3 reconnect paused-retentionは未解決の条件付き残存リスクのままです。Phase 9の結果はGate 3 PASSを意味しません。今回のGate 3実機再接続試験は行っていません。
-- PR #37はDraftのままです。mainへの統合、署名、production install、tag、公開は行っていません。
+再生統計復元P0は修正され、Owner実機評価によりリリース阻止要因から解除されました。PR #37の必須CIと独立レビューは成功しています。Gate 3のpaused-retentionは未解決の条件付き残存リスクです。本書はmainへの統合、署名、本番インストール、タグ作成、公開を承認しません。
 
-以下はPR #36の初回レビュー時点の履歴記録です。現況と異なる記述は上記のPhase 10A-R1更新で置き換えます。
+## 固定した正式候補
 
-**当初判断：BLOCKED — production Release APKは未生成**
+- Repository: `Yrika819/FLACtify`
+- 唯一の累積統合候補: Draft PR #37、base `main`
+- branch: `fix/v3.0.0-stats-restore-p0`
+- コード成果物のsource HEAD: `4592291a08a62dd923509d369df3b224c4b5afb3`
+- source tree: `a9c9ed0df88f8831f24dd7b79650accd25c64232`
+- package: `com.flactify`; versionName `3.0.0`; versionCode `18`
+- `main` HEAD確認値: `f73e8756fb7d26c0a5688419ca51c8c3ff55c9f6`
+- FoundationClosure APK SHA-256: `f3c8a9ce7aa674be1f8a7c5d4d29fcf15b76f0b258910a7d5bf9139560f68a9e`
+- unsigned production Release APK SHA-256: `f97b866c7e7e7f173e74242affc2a1b09ee244c1b6e676e3e5b9e76ddbd1b17d`
+- Owner限定Drive: FoundationClosure bundle [ダウンロード](https://drive.google.com/file/d/1xG3m_koZZm-D2BxG5SPXcX2D1ZQFV319/view?usp=drivesdk)、production APK [ダウンロード](https://drive.google.com/file/d/1rqVuBMdoZRNQ8HTjSlmUV1uDdCjs2MXv/view?usp=drivesdk)。いずれもOwner限定フォルダ内に保存。
 
-この候補は、Owner実機評価済みPR #35 HEADからのリリースメタデータ準備です。レビューでHIGHのデータ保全不具合が特定されたため、公式production Releaseの実装継続・ビルド・公開へは進みません。後述のローカル非production検証variantは実行済みですが、公式unsigned production Release APKは未生成です。
+両APKは同一コードHEAD/treeから生成され、ハッシュは別々です。FoundationClosureは実機評価用のdebug署名・試験用applicationId、production APKは`com.flactify`の未署名Releaseです。ReleaseValidation APKはproduction APKとして扱いません。リリース文書だけを追加する場合、コードsource HEADは上記のままです。
 
-## 基点と差分
+## 修正概要と互換性
 
-- Repository：`Yrika819/FLACtify`
-- 候補ブランチ：`release/v3.0.0-candidate`
-- 評価済み基点HEAD：`e03dcd9cbd5591e61505387afe9364b7df988dc0`
-- 評価済み基点tree：`1190aba1433957b64e98a3ccbc6023d682b2d9eb`
-- 基点Owner提示APK：FoundationClosure、SHA-256 `9f16c65c16906015296de9183524239475df7bdfd423406f82799bab93928f62`
-- 候補の意図した製品設定：`com.flactify`, versionName `3.0.0`, versionCode `18`
+根本原因は、通常の統計永続化が`pc/sc/lp`を使用する一方、バックアップ交換形式が`playCount/skipCount/lastPlayed`を使い、restoreが交換形式をSharedPreferencesへ直書きしていたことです。通常ロードでゼロ扱いされ、次回の再生・skip保存またはrollbackにより有効な統計を失う可能性がありました。
 
-評価済みsourceとの差分はdefault versionName/versionCodeとリリース用文書に限定します。製品動作コードは変更しません。候補準備は`release/v3.0.0-candidate`へコミット済みです。正確な最終HEAD/treeはdelivery recordで特定し、本書では自己参照になるため記載しません。評価済みAPKのSHAを候補APKのハッシュとして扱ってはいけません。
+PR #37では内部永続化codecとバックアップ交換codecを分離し、通常保存・読み込み、replace/merge restore、rollback、restore journal retryを内部形式で統一しました。既存v2.5.2の`pc/sc/lp`と既存バックアップの`playCount/skipCount/lastPlayed`を読み取れます。出力バックアップは交換形式を維持します。
 
-versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候補18は単調増加です。正式リリース前に最終ブランチとversion設定を再確認します。
+誤って内部保存された旧試験形式は、キーが一意で値が有効な場合に限り読み込み時に回復します。本番データの一括移行はありません。不正値、欠落キー、同時存在する競合形式は推測でゼロ化・加算・上書きせず、書き戻しや操作を停止してrawデータを保全します。rollbackは元のraw preferenceを保持します。統計イベントと復元/journal retryはプロセス内lockで直列化し、復元と再生・skipの読み取り変更書き込みが競合して更新を消すリスクを避けます。
 
-## 初回レビューで確認したP0：バックアップ復元後の再生統計不整合（PR #37で修正）
+お気に入り、通常/スマートplaylist、journal、設定も限定監査しました。今回の具体的な不一致は統計のほか、未知・不正なplaylist行を破棄しうる経路に対する保全ガードでした。設定はライブラリbackupの対象外です。無関係な形式変更や一括移行は行っていません。
 
-`LibraryBackup.kt`は統計を`playCount`、`skipCount`、`lastPlayed`キーでエンコードします（50–56行）。`LibraryManager.restoreBackup()`は同形式を`stats` preferenceへそのまま保存し、成功時に`statsCanBeRewritten = true`とします（165–190行）。一方、通常の`LibraryManager.parseStats()`は`pc`、`sc`、`lp`キーのみ読みます（311–328行）。
+## Owner実機評価と自動試験の区別
 
-そのため、復元直後に通常ロードすると各値が0として読み取られます。読み込まれたentry数はJSONのkey数と一致するため、`getAllStats()`のrewrite guardもtrueになります（130–136行）。次に`recordPlay()`または`recordSkip()`が`saveAllStats()`を呼ぶと、復元値をゼロ相当の値で書き換える可能性があります（201–234行）。これは再生統計の静かなデータ損失にあたります。OwnerのPhase 9評価で報告された別機能のPASSは、この経路を否定するものではありません。
+Owner報告として以下を受理しています（各Phaseの内訳詳細は本判断に含まれていないため補完していません）。
 
-初回レビューの候補HEADでは未修正でした。PR #37では内部永続化codecとバックアップ交換codecを分離し、通常保存・通常復元・merge・rollback・journal retryを内部`pc/sc/lp`形式に統一しました。v2.5.2形式と過去のバックアップ形式を読み取り、欠落・不正・競合行は推測せず書き戻しを止めます。rollbackは元のraw preference値を保持し、再生/skipとrestoreはプロセス内lockで直列化します。SharedPreferences経路を通す回帰試験を追加しました。修正後も正式統合・本番更新は別途判断です。
+| 評価 | 結果 | 証拠区分 |
+| --- | ---: | --- |
+| Phase 9A | 8/8 PASS | Owner実機 |
+| Phase 9B | 8/8 PASS | Owner実機 |
+| Phase 9C | 21/21 PASS | Owner実機 |
+| Phase 10A-R2 | 9/9 PASS | Owner実機 |
+| 合計 | 46/46 PASS | Owner報告の単純合算 |
 
-## データ互換性・更新条件
+Phase 10A-R2のOwner再検証でP0修正を確認したため、P0をrelease blockerから解除します。SharedPreferences instrumentationはコンパイル成功のみで実行済みではありません。Ownerの9/9はrollback失敗、journal retry、異常/競合行、並行更新の全自動試験実行を意味しません。
 
-- v2.5.2本番版は`com.flactify`、versionCode 17。候補versionCode 18はAndroidの更新条件上は増加です。
-- v2.5.2 Owner受理済み署名APK SHA-256：`aca14135a9d40a9ac780f24e9792e4e4ac00e7b3a13e6a08e4beb2b7b8d9f3eb`。
-- 上書き更新には、同一applicationIdに加えて、既存インストールと一致する本番署名証明書が必要です。今回生成可能なCloud APKは未署名です。本番鍵はCloudに持ち込まず、現時点でインストール可能なRelease APKはありません。
-- 通常のin-place updateではアプリデータを保持する想定ですが、バックアップ不具合を解消した後、最終署名APKと既存アプリの更新をOwnerが確認するまでデータ保持を実測済みとは扱いません。SAF grantの維持もOS管理状態として実機確認対象です。
-- v3 versionCodeからv2.5.2へ戻すダウングレードは保証しません。失敗時はアプリをアンインストールしたりデータ消去したりせず停止してください。再生統計復元のHIGH blockerが修正・確認されるまでは、復旧目的であってもアプリ内バックアップ復元を推奨・実行しません。旧署名APKを保全しても、AndroidはversionCodeの低いAPKへの通常上書きを拒否する場合があります。
+既存成果物を調べたところ、FoundationClosure APKと合成fixtureはありますが、instrumentation APKはありません。全SharedPreferences instrumentationを安全な隔離環境で実行するには追加のinstrumentation buildとAndroid test runtimeが必要です。この作業では追加ビルド・端末操作・データ消去を行わず、コンパイル成功とOwner評価を越える主張はしません。
 
-## 既知の制約とリリース上の扱い
+## 最終CI・独立レビュー
 
-| 項目 | 状態・評価 |
+最終コードHEAD `4592291...`について、次の必須GitHub checksはすべて成功しました。
+
+| Check | Run |
 | --- | --- |
-| Gate 3 reconnect paused-retention | 未解決。既存契約の再接続・paused状態に関する確認が残る。2.5.2を含む既往のOwner受理と新機能評価に、この assertion の解消は含まれていない。過去にOwnerが追加実機サイクルを停止しているため、本準備では再接続試験を再開しない。現有情報では単独の恒久的リリース禁止を裏付ける再現頻度・利用者影響の証拠は足りないため、既知の条件付きリスクとする。ただしOwnerがPaused状態喪失を受容できない場合、または再試験で再現した場合はリリース阻止要因とする。Gate 3 PASSとは記録しない。 |
-| M3U相対パス | Import UIは既知のcontent URI中心。任意provider内の相対パス解決はCORE_ONLYで、完全な製品対応ではない。 |
-| 外部LRC | 安全性を優先し、文書path・一覧を提供しないproviderでは利用不可へ縮退する。provider間で可用性に差がある。 |
-| ReplayGain / EQ | 数値PoCのみ。通常の再生経路へ統合されておらず利用機能ではない。 |
-| 製品画面の自動画像試験 | 未確立。Ownerの実機目視結果とCloud試験を混同しない。 |
-| Android性能計測 | PSS、jank、frame timeは未測定。 |
-| 再生統計バックアップ | 初回レビュー時のP0はPR #37で修正。最終HEADの必須CI完了とOwner実機再検証は別ゲート。 |
+| Android validation（JVM tests、Gradle test lifecycle、lint、Debug、ReleaseValidation/R8、APK 16 KiB） | 46148772358 (#98) |
+| CodeQL Advanced（Java/Kotlin、C/C++） | 46148772467 (#99) |
+| Fresh-extraction Compliance | 46148772334 (#73) |
+| LGPL relink | 46148772333 (#71) |
 
-## PR包含・統合方針
+FoundationClosure bundleのBUILD-INFOは上記コードHEAD/treeを記録し、bundle/APK hash、package、version、debug証明書を照合しました。production APKは上記の最終コードHEAD/treeのcheckoutからCI完了後に生成し、package `com.flactify`、3.0.0/18、未署名、ZIP alignmentおよびnative ELF 16 KiB alignmentを照合しました。APKにはsource attestationを埋め込んでいないため、production APKのバイト列とsourceの同等性は独立した第三者attestationで証明したものではなく、ビルド時checkoutとartifact検証記録に基づく対応付けです。両variantは同一ソースの別build variantでhashは一致しません。署名やインストールは行っていません。文書のみの追補commitでは`app/`のソースは変わらず、source mappingは維持されます。
 
-| PR | Base | Head | 状態・包含関係 |
-| --- | --- | --- | --- |
-| #29 | `main` | `17ace213810975653fa185561591fbc83258e99e` | Open Draft。#35の祖先に含まれる。 |
-| #30 | `integration/gate5-owner-absence` | `a2e1ba148dd7b10a5478fa6c85a5c8f17c4da897` | Open Draft。#35の祖先に含まれる。 |
-| #31 | `main` | `b69d1e605b0021cf816cc9330210a8fb73c4382d` | Open Draft。#35の祖先に含まれる。 |
-| #32 | `main` | `f114a41e1f37512808081158fc24573177cc7e05` | Open Draft。#35の祖先に含まれる。 |
-| #34 | `main` | `cb123655fbe7f62bbdc2b8eb9d6b1c675c90f122` | Open Draft。#35の祖先に含まれる。 |
-| #35 | `main` | `e03dcd9cbd5591e61505387afe9364b7df988dc0` | Open Draft。上記の累積候補。 |
-| #33 | `phase8/autonomous-development` | `4861c2c72d0da5cf44dd737e69fe74526da74ff3` | Open Draft。#35と独立したReplayGain/EQ研究PoC。 |
-| #36 | `main` | `4bfebeaa8dd872b0880fdbb85c87ceb18da45440` | Open Draft。保全対象のv3.0.0 candidate。head変更・closeなし。 |
-| #37 | `main` | `96035f9027cc6abc782184d989642ae44442ab12` | Open Draft。Phase 10A-R1統計復元修正を含む累積候補。 |
+独立レビュー（GPT-6 Luna High）は最終HEAD `4592291...`を確認し、統計修正コードに残存P0/P1ブロッカーなしと評価しました。レビュー対象のコードは`96035f9...`時点のものから変わらず、差分はリリース文書のみです。Reviewerはproduction APKのsource attestationがない点を証拠上の制約として指摘しました。
 
-#35の祖先に含まれるPRの変更は累積されています。古い累積PRを個別にマージすると変更が重複するため、#35を統合候補として扱い、統合前に各headの祖先関係とmainとの差分をGitHub上で再確認します。PR #33は統合せず、独立PoCとして保全します。今は既存PRを個別にマージせず、いずれもクローズしません。
+## PR包含関係と統合計画
 
-今回、mainへの統合、PRのclose、release tag作成、GitHub Release公開は行っていません。
+PR #37だけを累積統合候補とします。ローカルGit ancestry確認ではPR #29、#30、#31、#32、#34、#35、#36の各headがPR #37 headの祖先です。これらを個別に重複マージしません。#33 ReplayGain/EQ研究は独立PoCとして保全し、累積候補へ含めません。PR #36は指定head `4bfebeaa8dd872b0880fdbb85c87ceb18da45440`とtree `50292d79144c27b0cdfc5cdcf7fd83519dbad47e`を保全しています。
 
-## Cloud / Owner証拠
+統合はOwnerの別途承認後、PR #37を`main`へ通常のmerge commit方式で統合する案を推奨します。Squash/rebaseは署名対象APKのsource commit対応と検証済み履歴を変えるため使いません。merge commitなら署名済みAPKのpayload/source treeを変えず、統合前HEAD/treeとPR履歴を親commitで追跡できます。統合時は実際のmerge commit/treeと`app/`差分がPR候補と同等であることを記録し、APK binary hashとは区別します。現在はマージしていません。
 
-- PR #35の評価済みHEAD `e03dcd9`：499 JVM tests、Android validation、CodeQL Java/KotlinおよびC/C++、LGPL relink、Fresh-extraction ComplianceがPASSした記録あり。
-- Owner評価：Phase 9A 8/8、Phase 9B 8/8、Phase 9C 21/21 PASS。Owner報告では不具合なし。Phase 9B Owner提示APK SHAは上記基点に記載。
-- Owner評価は実機証拠、CIはCloud証拠であり、区別して扱う。
-- 候補ブランチのローカルCloud検証は次のコマンドでPASS：`./gradlew test lint assembleDebug assembleReleaseValidation assembleFoundationClosure compileDebugAndroidTestKotlin`。
-- この実行では499 JVM tests、Gradle test lifecycle、lint、Debug、ReleaseValidation/R8、FoundationClosure build、およびinstrumentation compileが成功した。Debug、ReleaseValidation、FoundationClosure APKのZIP alignmentとnative ELF 16 KiB alignmentもPASS。
-- ReleaseValidationのapplicationIdは`com.flactify.releasevalidation`であり、production IDの`com.flactify` Release APKではない。この検証をproduction Release artifactの検証済み扱いにしない。
-- 候補ブランチに対するGitHub candidate PR CI結果はまだない。上記はローカルCloud実行結果であり、GitHub CIやOwner実機結果として報告しない。
-- versionCode 18のproduction-ID unsigned Release APK、署名payload、production applicationIdを持つ最終APKの確認は未実施。stats restore blocker解消前のため、公式unsigned production Release APKは**BLOCKED / NOT GENERATED**。
+## Gate 3およびその他の残存リスク
 
-## 独立レビュー観点と現時点の判定
+- **Gate 3 paused-retention:** 未解決の条件付きリスク。Ownerの通常再生・background操作評価はPASSですが、再接続時のpaused-retention成功を意味しません。再接続実機試験は未承認・未実施です。Ownerが最終リリース承認時に受容可否を判断してください。
+- v3.0.0署名APKでのin-place update、SAF grantsと個人ライブラリデータの保持はまだ実機検証していません。
+- M3U任意provider内の相対path、外部LRC provider差、性能指標(PSS/jank/frame time)、製品画面自動画像試験に既知の制限があります。
+- ReplayGain/EQはPR #33の独立研究PoCで、通常の再生機能ではありません。
 
-| 項目 | 判定 | 根拠・未実施 |
-| --- | --- | --- |
-| 2.5.2 in-place update / data preservation | CONDITIONAL / UNVERIFIED for v3 | v2.5.2はOwner報告でPixel 7a in-place update成功。v3.0.0は未署名・未インストールで、Favorites、playlists、stats、settings、SAF grantsの更新保持は確認していない。 |
-| SAF grants / library cache compatibility | UNVERIFIED on v3 install | candidateで該当製品コードは変更しない想定だが、version bump candidateを既存インストールへ適用した検証はない。 |
-| Tag edit audio safety | Owner evidence exists for recent phases; candidate release install UNVERIFIED | v3 release packageの署名・R8後APKでのOwner操作は未実施。 |
-| Backup / restore | BLOCKED | play stats schema mismatchを確認。お気に入り・playlist以外も含むrestore successを一括で安全と主張できない。 |
-| MediaSession security | Baseline source review/CI only; no new finding documented here | v3 binary or device command-surface reviewは未実施。 |
-| Dependencies / licenses | BASELINE PASS at PR #35 HEAD; candidate GitHub rerun pending | PR #35でLGPL relink、Fresh-extraction Compliance、CodeQLがPASS。candidateブランチのGitHub CIは未実施。 |
-| Release/R8/resources | Local candidate ReleaseValidation/R8 PASS; production Release BLOCKED | ReleaseValidation APKは`.releasevalidation` suffix付きでproduction IDではない。versionCode 18のproduction Release APKは未生成。 |
-| APK ZIP / native 16 KiB | Local candidate Debug/ReleaseValidation/FoundationClosure PASS; production Release UNVERIFIED | 3 variantでalignmentを確認。production-ID unsigned Release APKは存在しない。 |
-| Instrumentation / screenshots / device performance | UNVERIFIED / not measured | Compile is not execution; product-screen screenshot automation, PSS, jank, and frame time are not established. |
+## Owner本番署名・上書き更新手順
 
-## リリース再開条件
+既存Owner限定Driveのunsigned production APKを使い、Macで再ビルドしません。本番署名鍵をCloudへ転送しません。以下はOwnerローカルで行う未実行の手順です。
 
-1. 再生統計restore schema mismatchを修正し、復元直後・再起動後・再生/skip保存後の値保持を回帰試験する。
-2. OwnerがHIGH blockerの修正と残存Gate 3リスクの条件付き受理を判断する。
-3. 最終候補から必要なPR CI、Release/R8、CodeQL、LGPL relink、Fresh-extraction Compliance、ZIP/native 16 KiB checksを実行し、applicationId/version/hash/license noticesを検証する。
-4. Cloudでunsigned `com.flactify` Release APKをowner-only Driveへ転送し、Ownerがローカル既存鍵で署名して証明書を確認する。鍵や署名はCloudに持ち込まない。
-5. 上書き更新、SAF grant、データ保持をOwnerが確認した後に、統合・正式リリースの別途判断を行う。
+1. DriveからAPKを取得し、SHA-256が`f97b866c...bd1b17d`であることを照合します。ファイル名・Drive IDだけで同一性を判断しません。
+2. `aapt dump badging app-release-unsigned.apk`で`com.flactify`、versionName `3.0.0`、versionCode `18`を確認します。`apksigner verify`で未署名であることを確認します。
+3. `zipalign -c -P 16 4 app-release-unsigned.apk`と16 KiB native ELF verifierを実行します。既に整列済みなので再zipalignしません。
+4. Ownerローカルの既存v2.5.2本番keystoreとaliasを使い、ローカルに署名します。password/keyはコマンド引数・Cloud・ログに出しません。例：`apksigner sign --ks <Owner-local-keystore> --ks-key-alias <existing-alias> --out app-release-signed.apk app-release-unsigned.apk`。
+5. 署名後のAPKで`apksigner verify --verbose --print-certs app-release-signed.apk`を実行します。証明書SHA-256が既存v2.5.2本番証明書と完全一致することを確認します。一致を確認できない場合は停止します。本資料にはv2.5.2証明書fingerprintの信頼済み値が記録されていないため、署名前にOwnerが保管済みv2.5.2署名APKまたは信頼できるローカル記録からfingerprintを採取・記録してください。候補APKのdebug証明書を基準にしません。署名後APKのSHA-256を別記し、unsigned hashと混同しません。署名後も`aapt dump badging`と`zipalign -c -P 16 4`、ELF verifierを実施します。署名後にAPKを書き換えません。
+6. Ownerが通常のライブラリbackupを保全し、署名・package・version・hashの照合完了後にだけin-place updateを判断します。既存アプリをアンインストールせず、アプリデータを消去しません。失敗・証明書不一致・Androidの更新拒否があれば停止し、現状を保全します。
+7. 更新後、Ownerはライブラリ、favorites、playlist、統計、設定、SAF grantを確認し、必要な場合はアプリ内backupを復元します。問題発生時はログ/backupと旧APKを保全し、再試行やdowngradeをせずOwner判断へ戻します。versionCode 18から17へのdowngradeは保証されません。
 
-本書の候補準備は、正式統合・署名・配布・本番インストールを承認しません。
+## 配布条件と禁止された操作
 
-## 次のOwner判断が必要な事項
+`com.flactify`の署名済みAPKは既存本番鍵の所有者がローカルでのみ作成します。現候補は未署名かつOwner限定配布です。v2.5.2と同様にOwner個人利用の範囲に留めます。LGPL relinkとFresh-extraction Complianceは候補CIでPASSしていますが、公開配布用の対応ソース・compliance asset同梱ゲートはこの候補の公開用Release locationに対して完了確認されていません。したがって一般公開の承認・準備完了とは記録しません。署名・本番インストール・マージ・タグ・GitHub Release公開はOwnerの別途承認まで保留です。
 
-1. HIGH blockerを修正し、回帰証拠が得られた後にv3.0.0準備を再開してよいか。
-2. Gate 3 paused-retentionを、再接続実機試験を再開せず既知の条件付きリスクとして受容するか。受容しない場合はrelease blockerとして維持する。
-3. final CI・未署名production Release・owner-only transfer完了後に、Owner鍵での署名と実機更新評価を許可するか。
-4. 正式統合およびv3.0.0 release tag/公開について、別途承認するか。本候補準備はこれらを実行しない。
+本書の作成時点でmainへのmerge、既存PRのclose、署名、本番更新、Mac/ADB/実機操作、個人データ取得、tag、GitHub Release、一般公開は行っていません。
