@@ -399,7 +399,25 @@ fun LibraryScreen(
                     }
                     tabContentStateHolder.SaveableStateProvider(tabContentKey) {
                         when (selectedTab) {
-                        "playlists" -> PlaylistsTab(viewModel, playlists, showPlaylistContent, onShowPlaylist = { showPlaylistContent = it }, onCreatePlaylist = { showCreatePlaylist = true })
+                        "playlists" -> when (val content = playlistTabContent(showPlaylistContent)) {
+                            PlaylistTabContent.List -> PlaylistsTab(
+                                viewModel = viewModel,
+                                playlists = playlists,
+                                onShowPlaylist = { showPlaylistContent = it },
+                                onCreatePlaylist = { showCreatePlaylist = true }
+                            )
+                            is PlaylistTabContent.Tracks -> {
+                                val tracks = viewModel.getPlaylistTracks(content.playlistId, artistMap.values.flatten())
+                                SongLazyColumn(
+                                    songs = tracks,
+                                    viewModel = viewModel,
+                                    onTrackLongClick = { editingTrack = it },
+                                    onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) },
+                                    onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) },
+                                    onAddToPlaylist = {}
+                                )
+                            }
+                        }
                         "recommendations" -> {
                             LaunchedEffect(Unit) { viewModel.loadRecommendations() }
                             RecommendationsTab(
@@ -480,13 +498,6 @@ fun LibraryScreen(
         }
         if (showCreatePlaylist) {
             CreatePlaylistDialog(viewModel = viewModel, onDismiss = { showCreatePlaylist = false })
-        }
-        if (showPlaylistContent != null) {
-            val playlistId = showPlaylistContent!!
-            val tracks = viewModel.getPlaylistTracks(playlistId, artistMap.values.flatten())
-            tabContentStateHolder.SaveableStateProvider("playlist-content:$playlistId") {
-                SongLazyColumn(songs = tracks, viewModel = viewModel, onTrackLongClick = { editingTrack = it }, onFavoriteClick = { viewModel.toggleFavorite(it.uri.toString()) }, onPlayAction = { ctx, list, idx -> viewModel.playAllTrack(ctx, list, idx) }, onAddToPlaylist = {})
-            }
         }
     }
 }
@@ -655,7 +666,7 @@ private fun RecommendationsTab(
 }
 
 @Composable
-private fun PlaylistsTab(viewModel: PlayerViewModel, playlists: List<Playlist>, showPlaylistContent: String?, onShowPlaylist: (String) -> Unit, onCreatePlaylist: () -> Unit) {
+private fun PlaylistsTab(viewModel: PlayerViewModel, playlists: List<Playlist>, onShowPlaylist: (String) -> Unit, onCreatePlaylist: () -> Unit) {
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row(

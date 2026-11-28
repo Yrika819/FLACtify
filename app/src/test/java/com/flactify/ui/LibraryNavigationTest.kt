@@ -5,6 +5,12 @@ import org.junit.Test
 
 class LibraryNavigationTest {
     @Test
+    fun `playlist list and track detail are mutually exclusive content states`() {
+        assertEquals(PlaylistTabContent.List, playlistTabContent(null))
+        assertEquals(PlaylistTabContent.Tracks("playlist-id"), playlistTabContent("playlist-id"))
+    }
+
+    @Test
     fun `Back closes playlist content before leaving the library`() {
         assertEquals(
             LibraryBackAction.CLOSE_PLAYLIST,
