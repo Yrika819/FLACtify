@@ -22,9 +22,9 @@ internal data class PlayStatsValues(
 class LibraryManager(context: Context) {
     private val favPrefs: SharedPreferences = context.getSharedPreferences("flactify_library", Context.MODE_PRIVATE)
     private val cacheDir: File = LibraryScanner.libraryCacheDirectory(context)
-    // Keep the journal beside (but outside) the library cache directory: clearCache() must not
-    // erase an interrupted restore intent before the user can retry it.
-    private val restoreJournal = LibraryBackupJournal(File(context.cacheDir, "library-restore.pending"))
+    // A pending restore is user data, not a disposable cache entry. Keep it in the app's
+    // non-backed-up files area so Android cache eviction cannot discard the recovery intent.
+    private val restoreJournal = LibraryBackupJournal(File(context.noBackupFilesDir, "library-restore.pending"))
     private var playlistsCanBeRewritten = true
     private var statsCanBeRewritten = true
 

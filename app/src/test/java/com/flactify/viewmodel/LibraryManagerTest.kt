@@ -61,6 +61,7 @@ class LibraryManagerTest {
     fun `clearing managed library cache leaves sibling work files untouched`() {
         val context = mockk<Context>(relaxed = true)
         every { context.cacheDir } returns tempCacheDir
+        every { context.noBackupFilesDir } returns File(tempCacheDir, "no_backup").apply { mkdirs() }
         val libraryCache = File(tempCacheDir, "flactify-library").apply { mkdirs() }
         File(libraryCache, "track_cache.json").writeText("rebuildable")
         val work = File(tempCacheDir, "flactify-work").apply { mkdirs() }

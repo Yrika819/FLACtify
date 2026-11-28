@@ -450,11 +450,15 @@ class LibraryScanner(
                 trackNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
                     ?.trim()?.takeIf { it.isNotEmpty() }
             } ?: return null
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             return null
         } finally {
             try {
                 retriever?.release()
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
             }
         }
@@ -484,6 +488,8 @@ class LibraryScanner(
                         replayGain = ReplayGainTagReader.fromComments(tags)
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // The descriptor metadata remains useful when the optional Opus comment stream
                 // is unavailable through a provider.
