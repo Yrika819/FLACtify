@@ -4,15 +4,15 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TAG=${1:-}
 OUT=${2:-}
-VERSION=2.5.1
+VERSION=${TAG#v}
 EXPECTED_SOURCES_SHA256=d9c79a145944e6bc37579403843c9da84cd81459e42c9877351802ee284f5858
 EXPECTED_POM_SHA256=f2978526656d884f7b91b518c567bcad330eb3541fd9372ebaeb771bed2e5188
 EXPECTED_UPSTREAM_LICENSE_SHA256=76ac9d645569ea2be48e5aea7b6336835a3fd9d4ef8284c7045bd8c59f6a7a39
 EXPECTED_UPSTREAM_SNAPSHOT_SHA256=f47c10ce8916db315c6e87ac32f2acd285a6a2beba50c833e8b089e7b63b1335
 UPSTREAM_SNAPSHOT_URL=https://bitbucket.org/ijabz/jaudiotagger/get/v3.0.1.tar.gz
 
-if [[ "$TAG" != "v$VERSION" || -z "$OUT" ]]; then
-  echo "Usage: $0 v2.5.1 <output-directory>" >&2
+if [[ "$TAG" != "v$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || -z "$OUT" ]]; then
+  echo "Usage: $0 v<versionName> <output-directory>" >&2
   exit 2
 fi
 if [[ -n $(git -C "$ROOT" status --porcelain) ]]; then
@@ -23,8 +23,8 @@ if ! git -C "$ROOT" rev-parse --verify "refs/tags/$TAG^{commit}" >/dev/null 2>&1
   echo "Release tag $TAG does not exist" >&2
   exit 1
 fi
-if ! git -C "$ROOT" show "$TAG:app/build.gradle.kts" | grep -Fq 'versionName = "2.5.1"'; then
-  echo "Tag $TAG does not declare versionName 2.5.1" >&2
+if ! git -C "$ROOT" show "$TAG:app/build.gradle.kts" | grep -Fq "versionName = \"$VERSION\""; then
+  echo "Tag $TAG does not declare versionName $VERSION" >&2
   exit 1
 fi
 for required in gradlew gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties settings.gradle.kts build.gradle.kts app/build.gradle.kts scripts/build-jaudiotagger.sh; do
@@ -43,10 +43,10 @@ printf '%s  %s\n' "$EXPECTED_UPSTREAM_LICENSE_SHA256" "$UPSTREAM_LICENSE" | shas
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
-FLAC_SOURCE="FLACtify-v2.5.1-source.tar.gz"
+FLAC_SOURCE="FLACtify-v$VERSION-source.tar.gz"
 JAUDIOTAGGER_SOURCE="jaudiotagger-3.0.1-complete-source.tar.gz"
 
-git -C "$ROOT" archive --format=tar.gz --prefix=FLACtify-v2.5.1-source/ "$TAG" > "$OUT/$FLAC_SOURCE"
+git -C "$ROOT" archive --format=tar.gz --prefix="FLACtify-v$VERSION-source/" "$TAG" > "$OUT/$FLAC_SOURCE"
 
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/flactify-lgpl-bundle.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
@@ -112,9 +112,9 @@ PY
 )
 
 tar -tzf "$OUT/$FLAC_SOURCE" > "$STAGE/flactify-source-files.txt"
-grep -Fq 'FLACtify-v2.5.1-source/gradlew' "$STAGE/flactify-source-files.txt"
-grep -Fq 'FLACtify-v2.5.1-source/app/build.gradle.kts' "$STAGE/flactify-source-files.txt"
-grep -Fq 'FLACtify-v2.5.1-source/third_party/jaudiotagger-3.0.1/jaudiotagger-3.0.1-sources.jar' "$STAGE/flactify-source-files.txt"
+grep -Fq "FLACtify-v$VERSION-source/gradlew" "$STAGE/flactify-source-files.txt"
+grep -Fq "FLACtify-v$VERSION-source/app/build.gradle.kts" "$STAGE/flactify-source-files.txt"
+grep -Fq "FLACtify-v$VERSION-source/third_party/jaudiotagger-3.0.1/jaudiotagger-3.0.1-sources.jar" "$STAGE/flactify-source-files.txt"
 tar -tzf "$OUT/$JAUDIOTAGGER_SOURCE" > "$STAGE/jaudiotagger-source-files.txt"
 grep -Fq './upstream/src/org/jaudiotagger/audio/AudioFile.java' "$STAGE/jaudiotagger-source-files.txt"
 grep -Fq './upstream/pom.xml' "$STAGE/jaudiotagger-source-files.txt"

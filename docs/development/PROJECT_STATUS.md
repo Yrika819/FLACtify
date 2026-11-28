@@ -1,8 +1,12 @@
 # Project Status
 
-Status: public development snapshot
+Status: FLACtify 2.5.2 personal-use release complete; public development continues
 
-Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (`main`, 2026-11-27)
+Release code source: `26b26fec6776237346b513d36ad32fc1e3ce58a6` (`release/2.5.2-candidate`, 2026-11-28)
+
+The finalization PR merges this source and its release records onto `main`. The `v2.5.2`
+tag targets the PR's main merge commit; app source and resources match the release code
+source above.
 
 This document is the current public entry point for product scope, delivery state, and
 verification limits. It supersedes design-only assumptions in older, locally preserved
@@ -14,12 +18,12 @@ authority for new work.
 | Item | Value |
 | --- | --- |
 | Application ID | `com.flactify` (debug suffix `.spatialdev`, isolated closure suffix `.foundationclosure`) |
-| Version | `2.5.1` (`versionCode` 16) |
+| Version | `2.5.2` (`versionCode` 17) |
 | SDK levels | `compileSdk 36`, `targetSdk 36`, `minSdk 26` |
 | Playback engine | Android Media3 `1.11.1` (single engine) |
 | UI | Existing FLACtify full-player UI; no mini-player UI yet |
 | Audio | Optional experimental Spatial Audio Studio backed by Steam Audio 4.8.1 |
-| Distribution | No public APK/AAB; binary-license gate is not cleared |
+| Distribution | Personal-use Release completed; no public APK/AAB; public binary-license gate remains closed |
 
 ## Phase 6A result (merged)
 
@@ -40,57 +44,50 @@ Delivered and covered by the merged test changes:
 The full player remains the existing implementation. Phase 6A did not introduce a
 mini player, a second playback engine, a DSP redesign, or a persistence-format migration.
 
-## Now-playing state: designed, not fully implemented
+## Phase 6B-1: shared now-playing state
 
-The target `NowPlayingUiState` contract is normative for Phase 6B Gate 3, but it is **not**
-a single published state at this baseline. `PlayerViewModel` still exposes several
-independent `StateFlow` values (title, artist, artwork, playback, position, duration,
-shuffle, repeat, and so on).
+The `NowPlayingUiState` shared snapshot and Media3 reconnect synchronization were merged
+through PR #21. The Owner accepted the manual device suite, while one reconnect paused-state
+retention assertion remains unresolved. Gate 3 is **not** reported as a complete PASS. Keep
+that risk visible in follow-up work; do not restart its device cycle without a new Owner
+decision.
 
-Behavior already present and tested at this baseline:
+## Opus/Ogg support and Release 2.5.2
 
-- Media3 is the only playback source; no duplicate player/service is created;
-- an item transition clears the previous artwork, lyrics, and audio-route details;
-- duration is dropped when the owning item is no longer current;
-- position is clamped to non-negative values and seeks are ignored while duration is
-  unknown;
-- shuffle ordering and duration ownership follow the Phase 6A rules above.
-
-Still required by the contract: a single immutable snapshot, explicit `NoTrack`, stable
-track identity, transition/controller generations, typed artwork state, stamped async
-metadata, reconnect resynchronization, and the complete regression matrix. See
-[`NOWPLAYING_CONTRACT.md`](NOWPLAYING_CONTRACT.md).
+Content-based audio identification, OpusTags metadata/lyrics/artwork parsing, and cached
+track retention on transient provider reads were merged through PR #22. The Owner's Opus
+device check passed 6/6. The signed 2.5.2 APK is for personal use only; the public binary
+distribution gate remains closed.
 
 ## Verification status
 
 | Area | State | Evidence / limit |
 | --- | --- | --- |
-| Phase 6A merge PR #19 checks | PASS | Android validation, CodeQL Java/Kotlin, CodeQL C/C++, compliance-bundle, LGPL relink, and CodeQL summary all reported SUCCESS on the PR. |
-| Baseline commit check-runs | PASS (observed) | Android validation, CodeQL Java/Kotlin, CodeQL C/C++, and compliance-bundle check-runs are SUCCESS on `eb2aad2`. |
-| JVM unit tests, lint, Debug, ReleaseValidation/R8, 16 KiB checks | PASS in existing CI | These are CI results, not a fresh local run in the migration workspace. |
-| Instrumentation / real-device playback | NOT VERIFIED on cloud | Requires a connected device; many scenarios remain Owner/device-only. |
-| Real music library, SAF picker, notification/MediaSession, Bluetooth | NOT VERIFIED here | Synthetic fixtures only; no claim is made for a user library. |
-| Production signing and APK/AAB distribution | NOT AVAILABLE | Signing material and binary-license clearance are out of scope. |
-| Codex Cloud setup | NOT YET EXECUTED | The setup script and network plan are prepared but not run in Codex Cloud. |
+| PR #22 required CI | PASS | Android validation, CodeQL, LGPL relink, and fresh-extraction compliance all succeeded at head `8e0e597a`; 389 unit tests passed. |
+| Release 2.5.2 identity | PASS | `com.flactify`, versionCode 17 / versionName 2.5.2. Signed APK SHA-256 is recorded in `CHANGELOG.md`. |
+| Signed APK and source match | PASS | Owner-provided APK hash verified; 218 non-signature ZIP entries match the Cloud-built unsigned APK from `26b26fe`; three v1 `META-INF` signing entries were added and APK Signing Scheme v2/v3 verify. |
+| Pixel 7a update and Owner validation | PASS (Owner-reported) | Existing-key update succeeded; no extra device test was run for this closure. |
+| 16 KiB alignment / runtime notices | PASS | Cloud unsigned artifact passed ZIP and ELF alignment checks; packaged LGPL-2.1, Steam Audio, and CIPIC notices are present. Signing did not change payload entries. |
+| Gate 3 reconnect paused retention | OPEN RISK | A device assertion remains unresolved. Gate 3 is not called fully successful. |
+| Public APK/AAB distribution | BLOCKED | The personal release was delivered privately. No general-public binary release was made. |
 
 ## Phase 6B gates
 
-1. **Gate 3 — NowPlaying contract** (next product implementation): implement and review the
-   single snapshot, generation semantics, stale-result protection, and regression tests in
-   a separate PR. No mini-player UI in the same change.
-2. **Gate 4 — Mini-player MVP**: only after Gate 3 is implemented and reviewed, and the
-   readiness conditions in [`MINIPLAYER_SPEC.md`](MINIPLAYER_SPEC.md) are satisfied.
-3. **Gate 5 — UX polish and stability**: device and performance evidence before any
-   expansion.
-
-Phase 6B product work has **not** started. The current migration work is documentation and
-cloud infrastructure only.
+1. **Gate 3 — NowPlaying contract:** implementation is merged. Preserve the reconnect
+   paused-retention finding as an open risk; do not claim full Gate 3 closure.
+2. **Phase 6B-2 — Mini-player MVP:** the Owner authorized development to resume after the
+   2.5.2 release closure. The mini-player remains unimplemented and must follow
+   [`MINIPLAYER_SPEC.md`](MINIPLAYER_SPEC.md). Carry the Gate 3 risk explicitly into its PR.
+3. **Gate 5 — UX polish and stability:** continue to require device and performance evidence.
 
 ## Non-negotiable constraints
 
 - Do not change product behavior in the cloud-migration phase.
-- Do not merge to `main` without explicit Owner approval.
-- Do not publish APK/AAB artifacts or releases.
+- Merge to `main` only through a reviewed PR and normal branch protections.
+- Do not publish APK/AAB artifacts or releases to the general public without a separate
+  Owner decision and cleared binary-license gate.
+- Keep personal-use signed binaries in owner-only storage; never commit them or upload signing
+  material to Codex Cloud.
 - Do not add signing keys, keystores, real Last.fm credentials, device serials, or personal
   paths to the repository.
 - Do not import private archive history or add the archive as a remote.

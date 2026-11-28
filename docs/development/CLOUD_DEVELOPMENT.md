@@ -4,9 +4,9 @@ Status: Phase 6B-P0 migration preparation
 
 Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (2026-11-27)
 
-This document describes how to reproduce the existing CI build environment in Codex Cloud.
-It is infrastructure documentation, not authorization for product changes. The migration PR
-adds documents and a setup script only.
+This document describes the Codex Cloud build environment and the Owner-approved private
+handoff for personal-use Release candidates. It does not authorize product changes or public
+binary distribution.
 
 ## Scope
 
@@ -20,7 +20,7 @@ In scope:
 Out of scope:
 
 - product behavior changes;
-- APK/AAB signing or publication;
+- APK/AAB signing in Cloud or general-public publication;
 - emulator/device provisioning;
 - adding secrets, signing keys, or personal data to the repository;
 - replacing GitHub Actions as the authoritative merge gate.
@@ -285,6 +285,45 @@ The following remain device-only and must not be reported as cloud PASS:
 
 Some instrumentation tests may compile in the cloud but cannot run there. Compilation is not
 execution.
+
+## Standard personal Release handoff
+
+Use this flow only for an Owner-authorized personal-use Release. It keeps signing material on
+the Mac and retains a Git commit for the Release source.
+
+1. Create a Release candidate branch from the current `main`, set the requested application
+   ID, `versionName`, and a `versionCode` greater than the installed version, then run the
+   required PR CI. Do not create a public Release or upload an APK to a public location.
+2. In Codex Cloud, build the production-ID Release APK unsigned:
+
+   ```sh
+   ./gradlew -PflactifyUnsignedRelease=true :app:assembleRelease
+   ```
+
+   The explicit property clears only the Release signing configuration for this invocation.
+   R8 minification and resource shrinking remain enabled. Do not bind, copy, or print signing
+   keys or passwords in Cloud.
+3. Record the source commit and verify APK package/version with `aapt dump badging`, ZIP
+   alignment with `zipalign -c -P 16 4`, and native ELF alignment with
+   `scripts/verify-16k-apk.py`. Record the APK SHA-256 and byte size. Inspect required license
+   notices in the APK and retain the applicable LGPL corresponding-source materials.
+4. Transfer the unsigned APK only to the existing owner-only Google Drive location. Check
+   that sharing is disabled and owner-only access is present both before and after upload.
+   Never put a keystore or password in Drive.
+5. On the Mac, download the APK, align it with Build Tools 36.0.0, and sign it with the
+   existing local production key using `apksigner`. Verify the signed APK certificate,
+   application ID, version, alignment, and SHA-256. The signed APK's non-signature ZIP
+   payload should match the Cloud-built unsigned artifact.
+6. Keep the signed APK private. Install it only after explicit Owner approval and only when
+   its signing certificate matches the currently installed app; never uninstall or clear
+   app data to work around a signature mismatch.
+
+For Release 2.5.2, the Cloud source build was commit
+`26b26fec6776237346b513d36ad32fc1e3ce58a6` (`com.flactify`, versionName `2.5.2`,
+versionCode `17`). The Owner-provided signed APK SHA-256 is
+`aca14135a9d40a9ac780f24e9792e4e4ac00e7b3a13e6a08e4beb2b7b8d9f3eb`. The signed payload
+was verified against the unsigned Cloud artifact, and the Owner reports successful Pixel 7a
+in-place update. This was a private personal release, not a public distribution.
 
 ## Cloud validation record
 
