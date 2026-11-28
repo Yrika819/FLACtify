@@ -65,7 +65,7 @@ class PlaybackControllerTest {
 
         assertEquals(
             QueueActionResult.SUCCESS,
-            controller.enqueueNext(track("next"), { "flac" }, { "audio/flac" })
+            controller.enqueueNext(track("next", "content://next"), { "flac" }, { "audio/flac" })
         )
         verify(exactly = 1) { player.addMediaItem(2, any()) }
         verify(exactly = 0) { player.setMediaItems(any<List<androidx.media3.common.MediaItem>>(), any(), any()) }
@@ -79,7 +79,7 @@ class PlaybackControllerTest {
 
         assertEquals(
             QueueActionResult.SUCCESS,
-            controller.enqueueAtEnd(track("last"), { "flac" }, { "audio/flac" })
+            controller.enqueueAtEnd(track("last", "content://last"), { "flac" }, { "audio/flac" })
         )
         verify(exactly = 1) { player.addMediaItem(3, any()) }
         verify(exactly = 0) { player.prepare() }
@@ -93,7 +93,7 @@ class PlaybackControllerTest {
 
         assertEquals(
             QueueActionResult.SHUFFLE_NEXT_UNAVAILABLE,
-            controller.enqueueNext(track("next"), { "flac" }, { "audio/flac" })
+            controller.enqueueNext(track("next", "content://next"), { "flac" }, { "audio/flac" })
         )
         verify(exactly = 0) { player.addMediaItem(any<Int>(), any()) }
     }
