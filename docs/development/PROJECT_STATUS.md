@@ -158,9 +158,12 @@ remain untouched.
 At candidate revision `e7b7e395053cce5d77e172113281755e4adb5c6c`, Cloud verification passed:
 482 JVM tests, full `test` lifecycle, lint, Debug APK, ReleaseValidation/R8, FoundationClosure
 APK, FoundationClosure instrumentation compilation, 16 KiB APK ZIP/native ELF checks, and
-LGPL relink proof. The debug APK is 53 MiB and unsigned ReleaseValidation APK is 35 MiB;
-the base and candidate APKs were not compared in a controlled size test. PR CodeQL, fresh
-release-extraction compliance, and Owner device checks remain pending or unavailable.
+LGPL relink proof. The debug APK is 53 MiB and unsigned ReleaseValidation APK is 35 MiB. A
+controlled same-variant debug build comparison measured 54,793,946 bytes at Phase 7G
+baseline `b69d1e6` and 55,213,658 bytes at the Phase 8 candidate (+419,712 bytes / 409.9
+KiB). This is debug APK size only, not a production APK delta. PR CodeQL Java/Kotlin and
+C/C++, Fresh-extraction compliance, and LGPL relink passed; PR Android validation was still
+completing at this checkpoint. Owner device checks remain unperformed.
 
 The candidate is intended for a Draft PR against `main`; no merge, production signing,
 production release, public distribution, or device operation is authorized.
