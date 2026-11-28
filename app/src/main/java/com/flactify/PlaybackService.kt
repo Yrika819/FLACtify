@@ -134,6 +134,9 @@ open class PlaybackService : MediaSessionService() {
             customCommand: SessionCommand,
             args: Bundle
         ): ListenableFuture<SessionResult> {
+            if (!controller.isTrusted) {
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+            }
             if (customCommand.customAction == SESSION_COMMAND_START_SHUFFLE_ROUND) {
                 // The service owns the order. Apply synchronously against the authoritative player
                 // so the returned result describes what actually happened, and reject a command

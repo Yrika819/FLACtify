@@ -85,9 +85,17 @@ fun PlayerScreen(
             val cacheKey = externalLyricsKey ?: return@let null
             withContext(Dispatchers.IO) {
                 ExternalLyricsCache.getOrLoad(cacheKey) {
-                    val sibling = externalLyricsUriFor(currentTrack.identity.uri, selectedTreeUri)
-                        ?: return@getOrLoad null
-                    context.contentResolver.openInputStream(sibling)?.use(::readExternalLyrics)
+                    try {
+                        val sibling = externalLyricsUriFor(currentTrack.identity.uri, selectedTreeUri)
+                        sibling?.let { context.contentResolver.openInputStream(it)?.use(::readExternalLyrics) }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (_: SecurityException) {
+                        // A revoked SAF grant should mean “no external lyrics”, not a failed player screen.
+                        null
+                    } catch (_: java.io.IOException) {
+                        null
+                    }
                 }
             }
         }

@@ -1372,17 +1372,22 @@ class PlayerViewModel : ViewModel() {
     }
 
     private fun persistFolderPermission(context: Context, uri: Uri): Boolean {
-        return try {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            hasPersistedWritePermission(context, uri)
-        } catch (_: SecurityException) {
-            hasPersistedWritePermission(context, uri)
-        } catch (_: UnsupportedOperationException) {
-            false
+        val resolver = context.contentResolver
+        // Read is the minimum required grant for a usable library. Request it independently so a
+        // provider that offers read-only access cannot accidentally lose the grant when a combined
+        // read+write persistence request is rejected. Editing is enabled separately only when the
+        // provider actually retained a write grant.
+        if (!hasPersistedReadPermission(context, uri)) {
+            runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
+        if (!hasPersistedWritePermission(context, uri)) {
+            runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+        }
+        return hasPersistedReadPermission(context, uri)
     }
 
     private fun hasPersistedWritePermission(context: Context, uri: Uri): Boolean {
