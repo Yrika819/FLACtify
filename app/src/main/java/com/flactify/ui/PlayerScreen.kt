@@ -422,7 +422,10 @@ fun PlayerScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 60.dp)
+                            // The player can be shown without the mini-player; use the actual
+                            // navigation inset instead of a fixed spacer that varies by device.
+                            .navigationBarsPadding()
+                            .padding(bottom = 16.dp)
                     ) {
                         PlayerProgress(viewModel)
 
@@ -688,7 +691,11 @@ private fun LyricsBottomSheet(
             }
             LazyColumn(
                 state = lyricsListState,
-                modifier = Modifier.fillMaxSize(),
+                // Keep the controls and source selector visible at large font scales. The list
+                // receives only the remaining sheet height instead of overflowing the column.
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 contentPadding = PaddingValues(bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
