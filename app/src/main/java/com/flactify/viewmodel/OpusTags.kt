@@ -22,7 +22,10 @@ internal object OpusTags {
     }
 
     fun read(stream: InputStream): Map<String, String> = try {
-        DataInputStream(stream.buffered()).use { input ->
+        // The reader stops as soon as OpusTags (packet 2) is complete. Do not add a buffered
+        // wrapper here: a provider-backed stream would otherwise read ahead into audio payload
+        // bytes that metadata extraction never needs.
+        DataInputStream(stream).use { input ->
             val packet = ByteArrayOutputStream()
             var firstPacket = true
             var completedPackets = 0
