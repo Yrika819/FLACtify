@@ -63,7 +63,7 @@ class LibraryManager private constructor(
             return emptyList()
         }
         val parsed = parsePlaylists(json)
-        playlistsCanBeRewritten = runCatching { parsed.size == JSONArray(json).length() }.getOrDefault(false)
+        playlistsCanBeRewritten = canSafelyRewritePlaylists(json, parsed)
         return parsed
     }
 
@@ -326,6 +326,52 @@ class LibraryManager private constructor(
         }
 
         fun parseStats(json: String): Map<String, PlayStats> = LibraryStatsCodec.decode(json).stats
+
+        private fun canSafelyRewritePlaylists(json: String, parsed: List<Playlist>): Boolean = runCatching {
+            val array = JSONArray(json)
+            if (parsed.size != array.length()) return false
+            val playlistFields = setOf("id", "name", "trackUris", "smartQuery")
+            val queryTextFields = setOf(
+                "titleContains", "artistContains", "albumContains", "genreContains", "yearContains",
+                "composerContains", "albumArtistContains", "formatContains"
+            )
+            for (index in 0 until array.length()) {
+                val raw = array.getJSONObject(index)
+                if (raw.keys().asSequence().any { it !in playlistFields }) return false
+                if (raw.opt("id") !is String || raw.opt("name") !is String) return false
+                if (raw.getString("id") != parsed[index].id || raw.getString("name") != parsed[index].name) return false
+                if (raw.has("trackUris")) {
+                    val uris = raw.optJSONArray("trackUris") ?: return false
+                    val values = buildList {
+                        for (uriIndex in 0 until uris.length()) {
+                            add(uris.get(uriIndex) as? String ?: return false)
+                        }
+                    }
+                    if (values != parsed[index].trackUris) return false
+                } else if (parsed[index].trackUris.isNotEmpty()) {
+                    return false
+                }
+                if (raw.has("smartQuery")) {
+                    val query = raw.optJSONObject("smartQuery") ?: return false
+                    if (query.keys().asSequence().any { it !in queryTextFields && it != "preset" && it != "order" && it != "limit" }) {
+                        return false
+                    }
+                    queryTextFields.forEach { key ->
+                        if (query.has(key) && (query.opt(key) !is String || query.getString(key).isBlank())) return false
+                    }
+                    if (query.has("preset") && (query.opt("preset") !is String ||
+                            runCatching { SmartPlaylistPreset.valueOf(query.getString("preset")) }.isFailure)) return false
+                    if (query.has("order") && (query.opt("order") !is String ||
+                            runCatching { SmartPlaylistOrder.valueOf(query.getString("order")) }.isFailure)) return false
+                    if (query.has("limit")) {
+                        val limit = query.opt("limit") as? Number ?: return false
+                        if (limit.toDouble() % 1.0 != 0.0 || limit.toLong() !in 1..100_000) return false
+                    }
+                    if (smartQueryFromJson(query) == null) return false
+                }
+            }
+            true
+        }.getOrDefault(false)
 
         private val STATS_LOCK = Any()
     }

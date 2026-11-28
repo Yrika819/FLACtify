@@ -185,7 +185,7 @@ class LibraryStatsRestorePersistenceTest {
 
     @Test
     fun mergeRefusesToOverwriteUnparseablePlaylistBytes() {
-        val raw = """[{"id":"kept","name":"Kept","trackUris":[]},{"id":"broken"}]"""
+        val raw = """[{"id":"kept","name":"Kept","trackUris":[],"smartQuery":[]}]"""
         preferences.edit().putString("playlists", raw)
             .putString("stats", "{}")
             .commit()
