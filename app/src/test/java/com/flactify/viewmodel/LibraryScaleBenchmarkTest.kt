@@ -92,6 +92,6 @@ class LibraryScaleBenchmarkTest {
     }
 
     private companion object {
-        val SIZES = listOf(1, 10, 50_000)
+        val SIZES = listOf(1_000, 10_000, 50_000)
     }
 }

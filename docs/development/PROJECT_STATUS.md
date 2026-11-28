@@ -152,7 +152,7 @@ remain untouched.
 | Player and lyrics layout | IMPLEMENTED | Navigation-bar inset and weighted lyrics list changes; related UI tests pass. |
 | ReplayGain playback correction | POC / BLOCKED | Numeric PCM prototype passed 13 tests; safe Media3 item-transition synchronization and direct/offload/spatial bypass are unresolved, so no correction is applied to playback. |
 | Parametric EQ | POC | Default-disconnected RBJ biquad engine passed stability/headroom tests. No listening-quality claim. |
-| Performance | POC / UNVERIFIED on device | Synthetic JVM tests at 1k/10k/50k report host timings only; no device PSS, jank, SAF-provider latency, or frame-time measurement. |
+| Performance | POC / UNVERIFIED on device | One cold synthetic JVM pass: 1k grouping/search/cache write-read 12.280/15.885/25.892 ms; 10k 11.498/9.423/33.018 ms; 50k 63.717/30.012/149.010 ms; 50k JSON cache 6,361,850 bytes. No heap/PSS, device jank, SAF-provider latency, or frame-time measurement. |
 | UI screenshot validation | POC | Existing isolated Compose smoke render passed, but it does not draw product screens; product screenshot verification remains unavailable without dependency changes. |
 
 At candidate revision `fe4c003254d82010987182854b6fa8c6cd1523b2`, Cloud verification passed:
