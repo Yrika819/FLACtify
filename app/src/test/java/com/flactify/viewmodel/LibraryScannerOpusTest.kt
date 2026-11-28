@@ -35,6 +35,12 @@ class LibraryScannerOpusTest {
     }
 
     @Test
+    fun `oversized documents select seekable descriptor metadata path`() {
+        assertFalse(LibraryScanner.usesSeekableDescriptor(LibraryScanner.MAX_TRACK_METADATA_COPY_BYTES))
+        assertTrue(LibraryScanner.usesSeekableDescriptor(LibraryScanner.MAX_TRACK_METADATA_COPY_BYTES + 1L))
+    }
+
+    @Test
     fun `initial scan and incremental scan recognize Opus by content and ignore corrupt mixture`() = runBlocking {
         val context = mockk<Context>(relaxed = true)
         val resolver = mockk<ContentResolver>(relaxed = true)

@@ -37,6 +37,20 @@ data class LibraryScanProgress(
     val failedFiles: List<String>
 )
 
+private data class SeekableMetadata(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val trackNumber: String?,
+    val genre: String?,
+    val year: String?,
+    val composer: String?,
+    val albumArtist: String?,
+    val discNumber: String?,
+    val comment: String?,
+    val replayGain: com.flactify.audio.ReplayGainTags
+)
+
 /** Whether a scan may reuse entries from the persisted library snapshot. */
 enum class LibraryScanMode {
     INCREMENTAL,
@@ -242,50 +256,73 @@ class LibraryScanner(
 
                 var tempFile: File? = null
                 var sourceCopied = false
+                var usedSeekableDescriptor = false
                 try {
-                    val scanFile = File.createTempFile("scan_", ".$fileExt", workDirectory(context))
-                    tempFile = scanFile
-                    val source = context.contentResolver.openInputStream(file.uri)
-                        ?: throw java.io.IOException("Unable to open audio document")
-                    source.use { input ->
-                        FileOutputStream(scanFile).use { output -> copyBoundedMetadata(input, output) }
-                    }
-                    sourceCopied = true
-
-                    try {
-                        val tag = AudioFileIO.read(scanFile).tag
-                        replayGain = ReplayGainTagReader.fromTag(tag)
-                        if (tag != null) {
-                            tag.getFirst(FieldKey.TITLE).takeIf { it.isNotBlank() }?.let { titleName = it.trim() }
-                            tag.getFirst(FieldKey.ARTIST).takeIf { it.isNotBlank() }?.let { artistName = it.trim() }
-                            tag.getFirst(FieldKey.ALBUM).takeIf { it.isNotBlank() }?.let { albumName = it.trim() }
-                            tag.getFirst(FieldKey.TRACK).takeIf { it.isNotBlank() }?.let { trackNum = it.trim() }
-                            tag.getFirst(FieldKey.GENRE).takeIf { it.isNotBlank() }?.let { genre = it.trim() }
-                            tag.getFirst(FieldKey.YEAR).takeIf { it.isNotBlank() }?.let { year = it.trim() }
-                            tag.getFirst(FieldKey.COMPOSER).takeIf { it.isNotBlank() }?.let { composer = it.trim() }
-                            tag.getFirst(FieldKey.ALBUM_ARTIST).takeIf { it.isNotBlank() }?.let { albumArtist = it.trim() }
-                            tag.getFirst(FieldKey.DISC_NO).takeIf { it.isNotBlank() }?.let { discNumber = it.trim() }
-                            tag.getFirst(FieldKey.COMMENT).takeIf { it.isNotBlank() }?.let { comment = it.trim() }
-                            tag.firstArtwork?.let { artBytes = compactArtworkBytes(it.binaryData) }
+                    if (usesSeekableDescriptor(fileSize)) {
+                        val descriptorMetadata = readSeekableMetadata(
+                            context,
+                            file.uri,
+                            fileExt,
+                            titleName
+                        ) ?: throw java.io.IOException("Unable to read oversized audio document through a seekable descriptor")
+                        titleName = descriptorMetadata.title
+                        artistName = descriptorMetadata.artist
+                        albumName = descriptorMetadata.album
+                        trackNum = descriptorMetadata.trackNumber
+                        genre = descriptorMetadata.genre
+                        year = descriptorMetadata.year
+                        composer = descriptorMetadata.composer
+                        albumArtist = descriptorMetadata.albumArtist
+                        discNumber = descriptorMetadata.discNumber
+                        comment = descriptorMetadata.comment
+                        replayGain = descriptorMetadata.replayGain
+                        sourceCopied = true
+                        usedSeekableDescriptor = true
+                    } else {
+                        val scanFile = File.createTempFile("scan_", ".$fileExt", workDirectory(context))
+                        tempFile = scanFile
+                        val source = context.contentResolver.openInputStream(file.uri)
+                            ?: throw java.io.IOException("Unable to open audio document")
+                        source.use { input ->
+                            FileOutputStream(scanFile).use { output -> copyBoundedMetadata(input, output) }
                         }
-                    } catch (e: Exception) {
-                        // Opus tags are read below because jaudiotagger 3.0.1 has no Opus reader.
-                        Log.d("FLACtify", "Primary tag reader did not recognize container")
-                    }
-                    if (fileExt == "opus") {
-                        OpusTags.read(scanFile)?.let { tags ->
-                            replayGain = ReplayGainTagReader.fromComments(tags)
-                            tags["TITLE"]?.takeIf { it.isNotBlank() }?.let { titleName = it }
-                            tags["ARTIST"]?.takeIf { it.isNotBlank() }?.let { artistName = it }
-                            tags["ALBUM"]?.takeIf { it.isNotBlank() }?.let { albumName = it }
-                            tags["TRACKNUMBER"]?.takeIf { it.isNotBlank() }?.let { trackNum = it }
-                            tags["GENRE"]?.takeIf { it.isNotBlank() }?.let { genre = it }
-                            tags["DATE"]?.takeIf { it.isNotBlank() }?.let { year = it }
-                            tags["COMPOSER"]?.takeIf { it.isNotBlank() }?.let { composer = it }
-                            tags["ALBUMARTIST"]?.takeIf { it.isNotBlank() }?.let { albumArtist = it }
-                            tags["DISCNUMBER"]?.takeIf { it.isNotBlank() }?.let { discNumber = it }
-                            tags["COMMENT"]?.takeIf { it.isNotBlank() }?.let { comment = it }
-                            tags["METADATA_BLOCK_PICTURE"]?.let(OpusTags::decodePicture)?.let(::compactArtworkBytes)?.let { artBytes = it }
+                        sourceCopied = true
+
+                        try {
+                            val tag = AudioFileIO.read(scanFile).tag
+                            replayGain = ReplayGainTagReader.fromTag(tag)
+                            if (tag != null) {
+                                tag.getFirst(FieldKey.TITLE).takeIf { it.isNotBlank() }?.let { titleName = it.trim() }
+                                tag.getFirst(FieldKey.ARTIST).takeIf { it.isNotBlank() }?.let { artistName = it.trim() }
+                                tag.getFirst(FieldKey.ALBUM).takeIf { it.isNotBlank() }?.let { albumName = it.trim() }
+                                tag.getFirst(FieldKey.TRACK).takeIf { it.isNotBlank() }?.let { trackNum = it.trim() }
+                                tag.getFirst(FieldKey.GENRE).takeIf { it.isNotBlank() }?.let { genre = it.trim() }
+                                tag.getFirst(FieldKey.YEAR).takeIf { it.isNotBlank() }?.let { year = it.trim() }
+                                tag.getFirst(FieldKey.COMPOSER).takeIf { it.isNotBlank() }?.let { composer = it.trim() }
+                                tag.getFirst(FieldKey.ALBUM_ARTIST).takeIf { it.isNotBlank() }?.let { albumArtist = it.trim() }
+                                tag.getFirst(FieldKey.DISC_NO).takeIf { it.isNotBlank() }?.let { discNumber = it.trim() }
+                                tag.getFirst(FieldKey.COMMENT).takeIf { it.isNotBlank() }?.let { comment = it.trim() }
+                                tag.firstArtwork?.let { artBytes = compactArtworkBytes(it.binaryData) }
+                            }
+                        } catch (e: Exception) {
+                            // Opus tags are read below because jaudiotagger 3.0.1 has no Opus reader.
+                            Log.d("FLACtify", "Primary tag reader did not recognize container")
+                        }
+                        if (fileExt == "opus") {
+                            OpusTags.read(scanFile)?.let { tags ->
+                                replayGain = ReplayGainTagReader.fromComments(tags)
+                                tags["TITLE"]?.takeIf { it.isNotBlank() }?.let { titleName = it }
+                                tags["ARTIST"]?.takeIf { it.isNotBlank() }?.let { artistName = it }
+                                tags["ALBUM"]?.takeIf { it.isNotBlank() }?.let { albumName = it }
+                                tags["TRACKNUMBER"]?.takeIf { it.isNotBlank() }?.let { trackNum = it }
+                                tags["GENRE"]?.takeIf { it.isNotBlank() }?.let { genre = it }
+                                tags["DATE"]?.takeIf { it.isNotBlank() }?.let { year = it }
+                                tags["COMPOSER"]?.takeIf { it.isNotBlank() }?.let { composer = it }
+                                tags["ALBUMARTIST"]?.takeIf { it.isNotBlank() }?.let { albumArtist = it }
+                                tags["DISCNUMBER"]?.takeIf { it.isNotBlank() }?.let { discNumber = it }
+                                tags["COMMENT"]?.takeIf { it.isNotBlank() }?.let { comment = it }
+                                tags["METADATA_BLOCK_PICTURE"]?.let(OpusTags::decodePicture)?.let(::compactArtworkBytes)?.let { artBytes = it }
+                            }
                         }
                     }
                 } catch (e: CancellationException) {
@@ -303,7 +340,7 @@ class LibraryScanner(
                     continue
                 }
 
-                if (artistName.isBlank() || albumName.isBlank()) {
+                if (!usedSeekableDescriptor && (artistName.isBlank() || albumName.isBlank())) {
                     val retriever = MediaMetadataRetriever()
                     try {
                         context.contentResolver.openFileDescriptor(file.uri, "r")?.use { fd ->
@@ -382,6 +419,89 @@ class LibraryScanner(
             }
         }
         LibraryScanResult(newParsedTracks, files, libraryChanged)
+    }
+
+    /**
+     * Reads only seekable metadata for an oversized SAF document. The descriptor lets platform
+     * extractors seek to headers without materializing the audio payload in the cache directory;
+     * artwork is intentionally omitted because a provider may expose an unbounded embedded blob.
+     */
+    private fun readSeekableMetadata(
+        context: Context,
+        uri: Uri,
+        extension: String,
+        fallbackTitle: String
+    ): SeekableMetadata? {
+        var title = fallbackTitle
+        var artist = ""
+        var album = ""
+        var trackNumber: String? = null
+        var retriever: MediaMetadataRetriever? = null
+        try {
+            retriever = MediaMetadataRetriever()
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                retriever.setDataSource(descriptor.fileDescriptor)
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                    ?.trim()?.takeIf { it.isNotEmpty() }?.let { title = it }
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                    ?.trim()?.takeIf { it.isNotEmpty() }?.let { artist = it }
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+                    ?.trim()?.takeIf { it.isNotEmpty() }?.let { album = it }
+                trackNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+                    ?.trim()?.takeIf { it.isNotEmpty() }
+            } ?: return null
+        } catch (_: Exception) {
+            return null
+        } finally {
+            try {
+                retriever?.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        var genre: String? = null
+        var year: String? = null
+        var composer: String? = null
+        var albumArtist: String? = null
+        var discNumber: String? = null
+        var comment: String? = null
+        var replayGain = com.flactify.audio.ReplayGainTags.UNKNOWN
+        if (extension == "opus") {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    OpusTags.read(input)?.let { tags ->
+                        fun tag(key: String): String? = tags[key]?.takeIf { it.isNotBlank() }
+                        tag("TITLE")?.let { title = it }
+                        tag("ARTIST")?.let { artist = it }
+                        tag("ALBUM")?.let { album = it }
+                        trackNumber = tag("TRACKNUMBER")
+                        genre = tag("GENRE")
+                        year = tag("DATE")
+                        composer = tag("COMPOSER")
+                        albumArtist = tag("ALBUMARTIST")
+                        discNumber = tag("DISCNUMBER")
+                        comment = tag("COMMENT")
+                        replayGain = ReplayGainTagReader.fromComments(tags)
+                    }
+                }
+            } catch (_: Exception) {
+                // The descriptor metadata remains useful when the optional Opus comment stream
+                // is unavailable through a provider.
+            }
+        }
+        return SeekableMetadata(
+            title = title,
+            artist = artist,
+            album = album,
+            trackNumber = trackNumber,
+            genre = genre,
+            year = year,
+            composer = composer,
+            albumArtist = albumArtist,
+            discNumber = discNumber,
+            comment = comment,
+            replayGain = replayGain
+        )
     }
 
     fun saveCache(context: Context, folderUri: Uri, tracks: List<TrackData>) {
@@ -596,6 +716,10 @@ class LibraryScanner(
                 copied += count
             }
         }
+
+        /** Files above the temp-copy budget must use a seekable SAF descriptor. */
+        internal fun usesSeekableDescriptor(fileSize: Long): Boolean =
+            fileSize > MAX_TRACK_METADATA_COPY_BYTES
         fun libraryCacheDirectory(context: Context): File =
             File(context.cacheDir, "flactify-library").apply { mkdirs() }
 
