@@ -6,8 +6,10 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withContext
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
@@ -373,23 +375,42 @@ internal suspend fun writeSafDocumentAndVerify(
     }
     if (!recoveryPrepared) createVerifiedRecoveryCopy(original, recoveryFile, MAX_TAG_EDIT_SOURCE_BYTES)
     var written = 0L
-    openOutput()?.use { output ->
-        replacement.inputStream().use { input ->
-            written = copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
-        }
-        output.flush()
-    } ?: throw IOException("Unable to open destination for writing")
+    var destinationMayHaveChanged = false
+    try {
+        destinationMayHaveChanged = true
+        openOutput()?.use { output ->
+            replacement.inputStream().use { input ->
+                written = copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
+            }
+            output.flush()
+        } ?: throw IOException("Unable to open destination for writing")
 
-    if (written != replacement.length()) {
-        throw IOException("Short write: wrote $written of ${replacement.length()} bytes")
+        if (written != replacement.length()) {
+            throw IOException("Short write: wrote $written of ${replacement.length()} bytes")
+        }
+        val expectedDigest = sha256(replacement.inputStream())
+        val actualStream = openInput() ?: throw IOException("Unable to verify destination after writing")
+        val actualDigest = actualStream.use { sha256(it) }
+        if (!expectedDigest.contentEquals(actualDigest)) {
+            throw IOException("Destination verification did not match the edited file")
+        }
+        check(original.isFile) { "Original recovery source is missing" }
+    } catch (e: CancellationException) {
+        if (destinationMayHaveChanged && recoveryFile.isFile) {
+            try {
+                withContext(NonCancellable) {
+                    restoreSafDocumentAndVerify(
+                        recoveryFile = recoveryFile,
+                        openOutput = openOutput,
+                        openInput = openInput
+                    )
+                }
+            } catch (restoreFailure: Exception) {
+                e.addSuppressed(restoreFailure)
+            }
+        }
+        throw e
     }
-    val expectedDigest = sha256(replacement.inputStream())
-    val actualStream = openInput() ?: throw IOException("Unable to verify destination after writing")
-    val actualDigest = actualStream.use { sha256(it) }
-    if (!expectedDigest.contentEquals(actualDigest)) {
-        throw IOException("Destination verification did not match the edited file")
-    }
-    check(original.isFile) { "Original recovery source is missing" }
 }
 
 private suspend fun createVerifiedRecoveryCopy(original: File, recoveryFile: File, maxBytes: Long) {

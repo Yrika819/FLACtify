@@ -11,6 +11,8 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -214,6 +216,51 @@ class TagEditorTest {
         assertTrue("a recovery file is retained after a partial write", File(tempCacheDir, "recovery.flac").exists())
         assertTrue("the retained recovery copy is the complete original", File(tempCacheDir, "recovery.flac").readBytes().contentEquals(original.readBytes()))
         assertTrue("a partial destination must not count as success", !destination.toByteArray().contentEquals(replacement.readBytes()))
+    }
+
+    @Test
+    fun `cancellation during SAF replacement restores and verifies the original`() = runTest {
+        val originalBytes = byteArrayOf(8, 7, 6, 5)
+        val original = File(tempCacheDir, "original.flac").apply { writeBytes(originalBytes) }
+        val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(ByteArray(128) { 2 }) }
+        val recovery = File(tempCacheDir, "recovery.flac")
+        var destination = originalBytes
+        var outputAttempts = 0
+        lateinit var editJob: Job
+
+        editJob = launch {
+            writeSafDocumentAndVerify(
+                original = original,
+                replacement = replacement,
+                recoveryFile = recovery,
+                openOutput = {
+                    val attempt = ++outputAttempts
+                    val buffer = ByteArrayOutputStream()
+                    object : OutputStream() {
+                        override fun write(value: Int) {
+                            buffer.write(value)
+                            if (attempt == 1) editJob.cancel()
+                        }
+
+                        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                            buffer.write(bytes, offset, length)
+                            if (attempt == 1) editJob.cancel()
+                        }
+
+                        override fun close() {
+                            destination = buffer.toByteArray()
+                        }
+                    }
+                },
+                openInput = { ByteArrayInputStream(destination) }
+            )
+        }
+        editJob.join()
+
+        assertTrue(editJob.isCancelled)
+        assertEquals(2, outputAttempts)
+        assertTrue("cancellation must restore the complete original", destination.contentEquals(originalBytes))
+        assertTrue("recovery remains available for an interrupted edit", recovery.readBytes().contentEquals(originalBytes))
     }
 
     @Test
