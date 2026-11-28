@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.TagRecoveryManager
+import com.flactify.audio.ReplayGainSelection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,6 +41,7 @@ fun SettingsScreen(
     val spatialHrtfMixPercent by viewModel.spatialHrtfMixPercent.collectAsState()
     val isChangingSpatialAudioMode by viewModel.isChangingSpatialAudioMode.collectAsState()
     val spatialAudioModeError by viewModel.spatialAudioModeError.collectAsState()
+    val replayGainPreferences by viewModel.replayGainPreferences.collectAsState()
     var hrtfMixDraft by remember(
         spatialHrtfMixPercent,
         isChangingSpatialAudioMode,
@@ -149,6 +151,76 @@ fun SettingsScreen(
                                 checkedTrackColor = Color(0xFF1DB954)
                             )
                         )
+                    }
+                }
+            }
+
+            item {
+                SettingsSectionHeader("ReplayGain")
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E1E1E)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("タグを診断", color = Color.White, fontSize = 14.sp)
+                                Text(
+                                    "既定ではオフ。現在の曲の補正値だけを表示し、再生音量には適用しません。",
+                                    color = Color(0xCCFFFFFF), fontSize = 12.sp, lineHeight = 18.sp
+                                )
+                            }
+                            Switch(
+                                checked = replayGainPreferences.enabled,
+                                onCheckedChange = viewModel::setReplayGainEnabled,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF1DB954)
+                                )
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = replayGainPreferences.selection == ReplayGainSelection.TRACK,
+                                onClick = { viewModel.setReplayGainSelection(ReplayGainSelection.TRACK) },
+                                label = { Text("Track", fontSize = 13.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFF1DB954),
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = Color(0x22FFFFFF), labelColor = Color.White
+                                )
+                            )
+                            FilterChip(
+                                selected = replayGainPreferences.selection == ReplayGainSelection.ALBUM,
+                                onClick = { viewModel.setReplayGainSelection(ReplayGainSelection.ALBUM) },
+                                label = { Text("Album", fontSize = 13.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFF1DB954),
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = Color(0x22FFFFFF), labelColor = Color.White
+                                )
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("ピークでクリップ防止", color = Color.White, fontSize = 13.sp)
+                            Switch(
+                                checked = replayGainPreferences.preventClipping,
+                                onCheckedChange = viewModel::setReplayGainPreventClipping,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF1DB954)
+                                )
+                            )
+                        }
                     }
                 }
             }

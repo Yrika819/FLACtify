@@ -25,6 +25,11 @@ import com.flactify.audio.DirectPlaybackProbe
 import com.flactify.audio.PlaybackDiagnostics
 import com.flactify.audio.PlaybackDiagnosticsBus
 import com.flactify.audio.SourceAudioInfo
+import com.flactify.audio.ReplayGainCalculator
+import com.flactify.audio.ReplayGainCorrection
+import com.flactify.audio.ReplayGainPreferences
+import com.flactify.audio.ReplayGainSelection
+import com.flactify.audio.ReplayGainTags
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -87,7 +92,9 @@ data class TrackData(
      */
     val formatExtension: String? = null,
     /** Provider-reported byte length, or -1 when the provider did not expose one. */
-    val fileSize: Long = -1L
+    val fileSize: Long = -1L,
+    /** Parsed loudness tags retained with the library snapshot; never applied to source audio. */
+    val replayGainTags: ReplayGainTags = ReplayGainTags.UNKNOWN
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -106,7 +113,8 @@ data class TrackData(
             originalIndex == other.originalIndex &&
             uri == other.uri &&
             java.util.Arrays.equals(albumArtBytes, other.albumArtBytes) &&
-            lastModified == other.lastModified
+            lastModified == other.lastModified &&
+            replayGainTags == other.replayGainTags
     }
 
     override fun hashCode(): Int {
@@ -124,6 +132,7 @@ data class TrackData(
         result = 31 * result + uri.hashCode()
         result = 31 * result + java.util.Arrays.hashCode(albumArtBytes)
         result = 31 * result + lastModified.hashCode()
+        result = 31 * result + replayGainTags.hashCode()
         return result
     }
 }
@@ -223,6 +232,12 @@ class PlayerViewModel : ViewModel() {
         PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
     )
     val pauseOnBluetoothDisconnect: StateFlow<Boolean> = _pauseOnBluetoothDisconnect
+
+    private val _replayGainPreferences = MutableStateFlow(ReplayGainPreferences())
+    val replayGainPreferences: StateFlow<ReplayGainPreferences> = _replayGainPreferences
+
+    private val _replayGainCorrection = MutableStateFlow(ReplayGainCorrection.UNKNOWN)
+    val replayGainCorrection: StateFlow<ReplayGainCorrection> = _replayGainCorrection
 
     private val _currentTrackName = MutableStateFlow("未再生")
     val currentTrackName: StateFlow<String> = _currentTrackName
@@ -391,6 +406,7 @@ class PlayerViewModel : ViewModel() {
             PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_KEY,
             PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
         ) ?: PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
+        sharedPreferences?.let { _replayGainPreferences.value = PlaybackSettings.readReplayGainPreferences(it) }
         _spatialAudioMode.value = SpatialAudioMode.fromWireValue(
             sharedPreferences?.getString(SpatialAudioMode.PREFERENCE_KEY, null)
         )
@@ -736,6 +752,7 @@ class PlayerViewModel : ViewModel() {
         _audioInfo.value = ""
         _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
+        _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
         detailsUri = null
         detailsSettled = false
     }
@@ -753,6 +770,7 @@ class PlayerViewModel : ViewModel() {
             _audioInfo.value = ""
             _bluetoothCodecInfo.value = ""
             _diagnostics.value = PlaybackDiagnostics()
+            _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
             detailsUri = null
             detailsSettled = false
             return
@@ -776,6 +794,7 @@ class PlayerViewModel : ViewModel() {
         _audioInfo.value = ""
         _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
+        _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
 
         val artworkIdentity = _nowPlayingUiState.value.current?.identity
         val artworkTransitionGeneration = _nowPlayingUiState.value.transitionGeneration
@@ -914,6 +933,15 @@ class PlayerViewModel : ViewModel() {
             // 48 kHz stereo and reporting "Direct supported" for a format nobody played.
             val capability = probe?.probe(source.sampleRateHz, source.channelCount)
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
+            val replayGainTags = currentCacheSnapshot?.tracks
+                ?.firstOrNull { it.uri == uri }
+                ?.replayGainTags
+                ?: ReplayGainTags.UNKNOWN
+            val replayGain = ReplayGainCalculator.calculate(
+                replayGainTags,
+                _replayGainPreferences.value,
+                ReplayGainTagReader.supportsExtension(extension)
+            )
             withContext(Dispatchers.Main) {
                 if (detailsUri != uri || detailsGeneration != requestGeneration ||
                     _nowPlayingUiState.value.current?.identity != trackIdentity ||
@@ -922,9 +950,49 @@ class PlayerViewModel : ViewModel() {
                 _diagnostics.value = _diagnostics.value.copy(
                     source = source,
                     route = route,
-                    capabilities = capability
+                    capabilities = capability,
+                    replayGain = replayGain
                 )
+                _replayGainCorrection.value = replayGain
             }
+        }
+    }
+
+    fun setReplayGainEnabled(enabled: Boolean) = updateReplayGainPreferences {
+        copy(enabled = enabled)
+    }
+
+    fun setReplayGainSelection(selection: ReplayGainSelection) = updateReplayGainPreferences {
+        copy(selection = selection)
+    }
+
+    fun setReplayGainPreampDb(preampDb: Double) = updateReplayGainPreferences {
+        copy(preampDb = preampDb.coerceIn(-12.0, 12.0))
+    }
+
+    fun setReplayGainPreventClipping(prevent: Boolean) = updateReplayGainPreferences {
+        copy(preventClipping = prevent)
+    }
+
+    private fun updateReplayGainPreferences(update: ReplayGainPreferences.() -> ReplayGainPreferences) {
+        val next = _replayGainPreferences.value.update()
+        _replayGainPreferences.value = next
+        sharedPreferences?.edit()
+            ?.putBoolean(PlaybackSettings.REPLAY_GAIN_ENABLED_KEY, next.enabled)
+            ?.putString(PlaybackSettings.REPLAY_GAIN_SELECTION_KEY, next.selection.name)
+            ?.putFloat(PlaybackSettings.REPLAY_GAIN_PREAMP_DB_KEY, next.preampDb.toFloat())
+            ?.putBoolean(PlaybackSettings.REPLAY_GAIN_PREVENT_CLIPPING_KEY, next.preventClipping)
+            ?.apply()
+        val uri = detailsUri
+        if (uri != null) {
+            val tags = currentCacheSnapshot?.tracks?.firstOrNull { it.uri == uri }?.replayGainTags
+                ?: ReplayGainTags.UNKNOWN
+            _replayGainCorrection.value = ReplayGainCalculator.calculate(
+                tags,
+                next,
+                ReplayGainTagReader.supportsExtension(metadataExtractor?.fileExtensionCache?.get(uri))
+            )
+            _diagnostics.value = _diagnostics.value.copy(replayGain = _replayGainCorrection.value)
         }
     }
 

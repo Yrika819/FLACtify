@@ -233,6 +233,7 @@ class LibraryScanner(
                 var discNumber: String? = null
                 var comment: String? = null
                 var artBytes: ByteArray? = null
+                var replayGain = com.flactify.audio.ReplayGainTags.UNKNOWN
 
                 val fileExt = detectedExt
                 metadataExtractor?.fileExtensionCache?.set(file.uri, fileExt)
@@ -251,6 +252,7 @@ class LibraryScanner(
 
                     try {
                         val tag = AudioFileIO.read(scanFile).tag
+                        replayGain = ReplayGainTagReader.fromTag(tag)
                         if (tag != null) {
                             tag.getFirst(FieldKey.TITLE).takeIf { it.isNotBlank() }?.let { titleName = it.trim() }
                             tag.getFirst(FieldKey.ARTIST).takeIf { it.isNotBlank() }?.let { artistName = it.trim() }
@@ -270,6 +272,7 @@ class LibraryScanner(
                     }
                     if (fileExt == "opus") {
                         OpusTags.read(scanFile)?.let { tags ->
+                            replayGain = ReplayGainTagReader.fromComments(tags)
                             tags["TITLE"]?.takeIf { it.isNotBlank() }?.let { titleName = it }
                             tags["ARTIST"]?.takeIf { it.isNotBlank() }?.let { artistName = it }
                             tags["ALBUM"]?.takeIf { it.isNotBlank() }?.let { albumName = it }
@@ -349,7 +352,8 @@ class LibraryScanner(
                         albumArtBytes = artBytes,
                         lastModified = fileLastMod,
                         formatExtension = fileExt,
-                        fileSize = fileSize
+                        fileSize = fileSize,
+                        replayGainTags = replayGain
                     )
                 )
             } catch (t: Throwable) {
@@ -404,6 +408,12 @@ class LibraryScanner(
                     put("lm", track.lastModified)
                     track.formatExtension?.let { put("fx", it) }
                     if (track.fileSize > 0L) put("fs", track.fileSize)
+                    track.replayGainTags.trackGainDb?.let { put("rgtg", it) }
+                    track.replayGainTags.albumGainDb?.let { put("rgag", it) }
+                    track.replayGainTags.trackPeak?.let { put("rgtp", it) }
+                    track.replayGainTags.albumPeak?.let { put("rgap", it) }
+                    track.replayGainTags.referenceLoudnessDb?.let { put("rgrl", it) }
+                    track.replayGainTags.r128TrackGainDb?.let { put("r128", it) }
                 })
             }
             root.put("data", array)
@@ -484,6 +494,14 @@ class LibraryScanner(
                     formatExtension = obj.optString("fx")
                         .takeIf(::isSupportedFormatExtension),
                     fileSize = obj.optLong("fs", -1L).takeIf { it > 0L } ?: -1L,
+                    replayGainTags = com.flactify.audio.ReplayGainTags(
+                        trackGainDb = obj.optDouble("rgtg").takeUnless { it.isNaN() },
+                        albumGainDb = obj.optDouble("rgag").takeUnless { it.isNaN() },
+                        trackPeak = obj.optDouble("rgtp").takeUnless { it.isNaN() },
+                        albumPeak = obj.optDouble("rgap").takeUnless { it.isNaN() },
+                        referenceLoudnessDb = obj.optDouble("rgrl").takeUnless { it.isNaN() },
+                        r128TrackGainDb = obj.optDouble("r128").takeUnless { it.isNaN() }
+                    ),
                     originalIndex = i
                 )
             )

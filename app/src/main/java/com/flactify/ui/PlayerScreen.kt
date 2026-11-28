@@ -996,6 +996,22 @@ private fun AudioDiagnosticsSheet(diagnostics: PlaybackDiagnostics) {
                 diagnostics.media3AudioSink.lastElapsedSinceLastFeedMs?.let { "$it ms" } ?: "Unknown"
             )
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        DiagnosticsSection("ReplayGain（診断のみ）") {
+            DiagnosticsRow("状態", diagnostics.replayGain.status.name)
+            DiagnosticsRow(
+                "選択ゲイン",
+                diagnostics.replayGain.selectedGainDb?.let { String.format(java.util.Locale.US, "%.2f dB", it) }
+                    ?: "Unknown"
+            )
+            DiagnosticsRow(
+                "補正後",
+                diagnostics.replayGain.appliedGainDb?.let { String.format(java.util.Locale.US, "%.2f dB", it) }
+                    ?: "Unknown"
+            )
+            DiagnosticsRow("説明", diagnostics.replayGain.message ?: "Unknown")
+        }
     }
 }
 
