@@ -38,9 +38,9 @@ class LibraryScannerOwnershipTest {
     }
 
     @Test
-    fun `untrustworthy timestamps can reuse equal known size`() {
-        assertTrue(LibraryScanner.isCacheEntryFresh(0L, 0L, 100L, 100L))
-        assertTrue(LibraryScanner.isCacheEntryFresh(123L, 0L, 100L, 100L))
+    fun `untrustworthy timestamps require reopen even with equal known size`() {
+        assertFalse(LibraryScanner.isCacheEntryFresh(0L, 0L, 100L, 100L))
+        assertFalse(LibraryScanner.isCacheEntryFresh(123L, 0L, 100L, 100L))
     }
 
     @Test

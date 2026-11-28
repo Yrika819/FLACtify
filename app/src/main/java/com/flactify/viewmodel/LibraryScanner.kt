@@ -62,7 +62,8 @@ class LibraryScanner(
     /**
      * Explicit recovery path for a user-facing “rescan all” action. It deliberately discards
      * cache entries for this invocation, refreshing metadata and format hints for every document.
-     * The caller owns any UI action that invokes it; normal scans remain incremental.
+     * The caller owns any UI action that invokes it; normal scans remain incremental. This is
+     * required when provider mtime and size metadata are insufficient to identify replacements.
      */
     suspend fun fullRescan(
         context: Context,
@@ -530,9 +531,9 @@ class LibraryScanner(
             cached > 0L && current > 0L && cached == current
 
         /**
-         * Validates both provider metadata fields when available. A non-positive timestamp is
-         * treated as untrustworthy; equal positive lengths can still permit a bounded incremental
-         * reuse in that case. Size and mtime are metadata hints, not a content identity guarantee.
+         * Validates provider metadata for an incremental reuse. A non-positive timestamp is
+         * untrustworthy, so equal size alone is never accepted: the caller must reopen and parse
+         * the document. Size and mtime are metadata hints, not a content identity guarantee.
          */
         internal fun isCacheEntryFresh(
             cachedTimestamp: Long,
@@ -542,10 +543,8 @@ class LibraryScanner(
         ): Boolean {
             val sizesKnown = cachedSize > 0L && currentSize > 0L
             if (sizesKnown && cachedSize != currentSize) return false
-            if (cachedTimestamp > 0L && currentTimestamp > 0L) {
-                return cachedTimestamp == currentTimestamp
-            }
-            return sizesKnown
+            if (cachedTimestamp <= 0L || currentTimestamp <= 0L) return false
+            return cachedTimestamp == currentTimestamp
         }
 
         internal fun ownsFolder(snapshot: LibraryCacheSnapshot?, folderUri: Uri): Boolean =
