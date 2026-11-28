@@ -1,6 +1,7 @@
 package com.flactify.ui
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
@@ -40,6 +42,27 @@ import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.NowPlayingUiState
 import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.PlaybackState
+
+private val MiniPlayerFallbackBackground = Color(0xFF29292D)
+private val MiniPlayerArtworkPlaceholder = Color(0xFF1E1E22)
+private val MiniPlayerSecondaryText = Color.White.copy(alpha = 0.76f)
+
+/** Mixes the existing artwork accent into a dark base so bright art never creates a light card. */
+internal fun miniPlayerBackgroundColor(themeColor: Int?, hasArtwork: Boolean): Color {
+    if (!hasArtwork || themeColor == null) return MiniPlayerFallbackBackground
+
+    val accentWeight = 0.30f
+    val base = 18f / 255f
+    val red = ((themeColor ushr 16) and 0xFF) / 255f
+    val green = ((themeColor ushr 8) and 0xFF) / 255f
+    val blue = (themeColor and 0xFF) / 255f
+    return Color(
+        red = base * (1f - accentWeight) + red * accentWeight,
+        green = base * (1f - accentWeight) + green * accentWeight,
+        blue = base * (1f - accentWeight) + blue * accentWeight,
+        alpha = 1f
+    )
+}
 
 /** Internal rollout switch; no user setting or persisted flag is introduced. */
 internal object MiniPlayerFeature {
@@ -66,6 +89,7 @@ internal fun MiniPlayer(
     modifier: Modifier = Modifier
 ) {
     val cachedAlbumArt by viewModel.albumArt.collectAsState()
+    val themeColor by viewModel.themeColor.collectAsState()
     val current = nowPlaying.current ?: return
     val title = current.title?.takeIf(String::isNotBlank) ?: "不明な曲"
     val artist = current.artist?.takeIf(String::isNotBlank) ?: "不明なアーティスト"
@@ -76,12 +100,15 @@ internal fun MiniPlayer(
     val artworkUri = artwork?.artworkUri?.takeIf {
         artwork.source == ArtworkState.Available.Source.MEDIA3
     }
+    val hasArtwork = artwork != null && (cachedArtwork != null || artworkUri != null)
+    val miniPlayerBackground = miniPlayerBackgroundColor(themeColor, hasArtwork)
 
     Surface(
         modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = miniPlayerBackground,
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
         shadowElevation = 3.dp
     ) {
         Row(
@@ -118,7 +145,7 @@ internal fun MiniPlayer(
                         Text(
                             text = miniPlayerArtistLabel(artist, nowPlaying.playbackState),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MiniPlayerSecondaryText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -170,12 +197,12 @@ private fun MiniPlayerArtwork(
                 contentScale = ContentScale.Crop
             )
             else -> {
-                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(9.dp)) {
+                Surface(color = MiniPlayerArtworkPlaceholder, shape = RoundedCornerShape(9.dp)) {
                     Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.MusicNote,
                             contentDescription = description,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = Color.White.copy(alpha = 0.82f),
                             modifier = Modifier.size(26.dp)
                         )
                     }
