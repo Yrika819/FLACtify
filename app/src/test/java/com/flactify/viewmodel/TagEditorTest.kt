@@ -33,6 +33,17 @@ class TagEditorTest {
     }
 
     @Test
+    fun `tag edit copy rejects a stream that exceeds its configured byte limit`() = runTest {
+        val destination = ByteArrayOutputStream()
+        val error = runCatching {
+            copyBounded(ByteArrayInputStream(ByteArray(33) { it.toByte() }), destination, maxBytes = 32)
+        }.exceptionOrNull()
+
+        assertTrue(error is IOException)
+        assertEquals(0, destination.size())
+    }
+
+    @Test
     fun `updateTrackTags returns failure when source URI cannot be read`() = runTest {
         val context = mockk<Context>()
         val resolver = mockk<ContentResolver>()
@@ -150,7 +161,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement succeeds only after exact content can be read back`() {
+    fun `SAF replacement succeeds only after exact content can be read back`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(4, 5, 6, 7)) }
         val destination = ByteArrayOutputStream()
@@ -166,7 +177,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement fails if destination cannot be opened`() {
+    fun `SAF replacement fails if destination cannot be opened`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(2)) }
 
@@ -179,7 +190,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement propagates a destination failure during write`() {
+    fun `SAF replacement propagates a destination failure during write`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1, 1, 1, 1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(ByteArray(16) { 2 }) }
         val destination = ByteArrayOutputStream()
@@ -206,7 +217,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF destination is not opened when recovery copy cannot be created`() {
+    fun `SAF destination is not opened when recovery copy cannot be created`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(8, 7, 6)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val impossibleRecovery = File(tempCacheDir, "missing-directory/recovery.flac")
@@ -227,7 +238,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement rejects mismatched readback`() {
+    fun `SAF replacement rejects mismatched readback`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(2, 3)) }
         val destination = ByteArrayOutputStream()
@@ -244,7 +255,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `recovery copy restores a partially replaced document and verifies it`() {
+    fun `recovery copy restores a partially replaced document and verifies it`() = runTest {
         val recovery = File(tempCacheDir, "recovery.flac").apply { writeBytes(byteArrayOf(8, 7, 6, 5, 4)) }
         var destination = byteArrayOf(1, 2)
         var writes = 0

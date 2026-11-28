@@ -3,8 +3,11 @@ package com.flactify.viewmodel
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
@@ -18,6 +21,10 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+
+private const val MAX_TAG_EDIT_SOURCE_BYTES = 1024L * 1024L * 1024L
+private const val TAG_EDIT_WORKING_SET_RESERVE_BYTES = 32L * 1024L * 1024L
+private const val TAG_EDIT_COPY_BUFFER_BYTES = 64 * 1024
 
 data class TagEditRequest(
     val title: String,
@@ -78,18 +85,36 @@ class TagEditor internal constructor(
                 throw TagEditFailure(TagEditFailureCategory.UNSUPPORTED_FORMAT, "Unsupported audio format")
             }
 
+            val advertisedSize = queryDocumentSize(context, trackUri)
+            if (advertisedSize != null && advertisedSize > MAX_TAG_EDIT_SOURCE_BYTES) {
+                throw TagEditFailure(TagEditFailureCategory.SAVE_FAILED, "Source exceeds the safe tag-edit size limit")
+            }
+
             val safeExtension = fileExtension.takeIf { it.matches(Regex("[A-Za-z0-9]{1,10}")) } ?: sourceFormat
             val sourceFile = File.createTempFile("edit_source_", ".$safeExtension", LibraryScanner.workDirectory(context))
             sourceTemp = sourceFile
             context.contentResolver.openInputStream(trackUri)?.use { input ->
                 FileOutputStream(sourceFile).use { output ->
-                    input.copyTo(output)
+                    copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
+                    output.fd.sync()
                 }
             } ?: throw TagEditFailure(TagEditFailureCategory.READ_ACCESS, "Unable to read source")
 
+            val workingSetRequired = sourceFile.length() * 3L + TAG_EDIT_WORKING_SET_RESERVE_BYTES
+            if (workingSetRequired < sourceFile.length() ||
+                LibraryScanner.workDirectory(context).usableSpace < workingSetRequired
+            ) {
+                throw TagEditFailure(TagEditFailureCategory.SAVE_FAILED, "Insufficient private storage for a protected tag edit")
+            }
+
             val editedFile = File.createTempFile("edit_work_", ".$safeExtension", LibraryScanner.workDirectory(context))
             editedTemp = editedFile
-            sourceFile.copyTo(editedFile, overwrite = true)
+            sourceFile.inputStream().use { input ->
+                FileOutputStream(editedFile).use { output ->
+                    copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
+                    output.fd.sync()
+                }
+            }
             val editedArtworkBytes = if (sourceFormat == "opus") {
                 val cover = request.artworkBitmap?.let(::compressArtwork)
                 val opusChanges = OggOpusTagEditor.Changes(
@@ -127,6 +152,10 @@ class TagEditor internal constructor(
                 AudioFileIO.read(editedFile).tag?.firstArtwork?.binaryData
             }
 
+            if (editedFile.length() > MAX_TAG_EDIT_SOURCE_BYTES) {
+                throw TagEditFailure(TagEditFailureCategory.SAVE_FAILED, "Edited file exceeds the safe tag-edit size limit")
+            }
+
             val recoveryDirectory = TagRecoveryManager.recoveryDirectory(context).apply { mkdirs() }
             TagRecoveryManager.ensureCapacity(context, MAX_RECOVERY_COPIES)
             val recoveryFile = File.createTempFile(
@@ -136,7 +165,7 @@ class TagEditor internal constructor(
             val recoveryMetadata = File(recoveryDirectory, "${recoveryFile.name}.json")
             val createdAt = System.currentTimeMillis()
             try {
-                createVerifiedRecoveryCopy(sourceFile, recoveryFile)
+                createVerifiedRecoveryCopy(sourceFile, recoveryFile, MAX_TAG_EDIT_SOURCE_BYTES)
             } catch (e: Exception) {
                 recoveryFile.delete()
                 if (e is CancellationException) throw e
@@ -293,6 +322,37 @@ private fun writeRecoveryMetadata(
     }
 }
 
+private fun queryDocumentSize(context: Context, uri: Uri): Long? = try {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index).takeIf { it >= 0L } else null
+        } else null
+    }
+} catch (_: Exception) {
+    // OpenableColumns.SIZE is advisory; providers may deny or omit it. The bounded stream copy
+    // below remains the authoritative limit, and opening the stream reports actual read access.
+    null
+}
+
+internal suspend fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long): Long {
+    require(maxBytes >= 0L)
+    val buffer = ByteArray(TAG_EDIT_COPY_BUFFER_BYTES)
+    var copied = 0L
+    while (true) {
+        currentCoroutineContext().ensureActive()
+        val count = input.read(buffer)
+        if (count < 0) break
+        if (count.toLong() > maxBytes - copied) {
+            throw IOException("Source exceeds the safe tag-edit size limit")
+        }
+        output.write(buffer, 0, count)
+        copied += count
+    }
+    currentCoroutineContext().ensureActive()
+    return copied
+}
+
 private class RecoveryCopyException(cause: IOException) : IOException(cause)
 
 /**
@@ -300,7 +360,7 @@ private class RecoveryCopyException(cause: IOException) : IOException(cause)
  * opening the destination in truncating mode, then require a complete write and matching readback
  * before reporting success. The caller retains the recovery copy if this function fails.
  */
-internal fun writeSafDocumentAndVerify(
+internal suspend fun writeSafDocumentAndVerify(
     original: File,
     replacement: File,
     recoveryFile: File,
@@ -308,17 +368,14 @@ internal fun writeSafDocumentAndVerify(
     openInput: () -> InputStream?,
     recoveryPrepared: Boolean = false
 ) {
-    if (!recoveryPrepared) createVerifiedRecoveryCopy(original, recoveryFile)
+    if (replacement.length() > MAX_TAG_EDIT_SOURCE_BYTES) {
+        throw IOException("Edited file exceeds the safe tag-edit size limit")
+    }
+    if (!recoveryPrepared) createVerifiedRecoveryCopy(original, recoveryFile, MAX_TAG_EDIT_SOURCE_BYTES)
     var written = 0L
     openOutput()?.use { output ->
         replacement.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                output.write(buffer, 0, count)
-                written += count
-            }
+            written = copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
         }
         output.flush()
     } ?: throw IOException("Unable to open destination for writing")
@@ -327,19 +384,20 @@ internal fun writeSafDocumentAndVerify(
         throw IOException("Short write: wrote $written of ${replacement.length()} bytes")
     }
     val expectedDigest = sha256(replacement.inputStream())
-    val actualDigest = openInput()?.use(::sha256)
-        ?: throw IOException("Unable to verify destination after writing")
+    val actualStream = openInput() ?: throw IOException("Unable to verify destination after writing")
+    val actualDigest = actualStream.use { sha256(it) }
     if (!expectedDigest.contentEquals(actualDigest)) {
         throw IOException("Destination verification did not match the edited file")
     }
     check(original.isFile) { "Original recovery source is missing" }
 }
 
-private fun createVerifiedRecoveryCopy(original: File, recoveryFile: File) {
+private suspend fun createVerifiedRecoveryCopy(original: File, recoveryFile: File, maxBytes: Long) {
     try {
+        if (original.length() > maxBytes) throw IOException("Source exceeds the safe tag-edit size limit")
         FileInputStream(original).use { input ->
             FileOutputStream(recoveryFile, false).use { output ->
-                val copiedBytes = input.copyTo(output)
+                val copiedBytes = copyBounded(input, output, maxBytes)
                 output.fd.sync()
                 if (copiedBytes != original.length() || recoveryFile.length() != original.length()) {
                     throw IOException("Recovery copy is incomplete")
@@ -356,7 +414,7 @@ private fun createVerifiedRecoveryCopy(original: File, recoveryFile: File) {
     }
 }
 
-internal fun restoreSafDocumentAndVerify(
+internal suspend fun restoreSafDocumentAndVerify(
     recoveryFile: File,
     openOutput: () -> OutputStream?,
     openInput: () -> InputStream?
@@ -364,29 +422,26 @@ internal fun restoreSafDocumentAndVerify(
     var written = 0L
     openOutput()?.use { output ->
         recoveryFile.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                output.write(buffer, 0, count)
-                written += count
-            }
+            written = copyBounded(input, output, MAX_TAG_EDIT_SOURCE_BYTES)
         }
         output.flush()
     } ?: throw IOException("Unable to open destination for recovery")
     if (written != recoveryFile.length()) throw IOException("Incomplete recovery write")
     val expected = sha256(recoveryFile.inputStream())
-    val actual = openInput()?.use(::sha256) ?: throw IOException("Unable to verify recovery write")
+    val actualStream = openInput() ?: throw IOException("Unable to verify recovery write")
+    val actual = actualStream.use { sha256(it) }
     if (!expected.contentEquals(actual)) throw IOException("Recovered source did not match")
 }
 
-private fun sha256(input: InputStream): ByteArray = input.use { stream ->
+private suspend fun sha256(input: InputStream): ByteArray = input.use { stream ->
     val digest = MessageDigest.getInstance("SHA-256")
     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
     while (true) {
+        currentCoroutineContext().ensureActive()
         val count = stream.read(buffer)
         if (count < 0) break
         digest.update(buffer, 0, count)
     }
+    currentCoroutineContext().ensureActive()
     digest.digest()
 }
