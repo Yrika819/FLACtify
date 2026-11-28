@@ -10,6 +10,14 @@ python3 -m unittest discover -s tools/replaygain-poc -p 'test_*.py'
 tools/replaygain-poc/run_synthetic_ebur128.sh
 ```
 
+The additional `pcm_gain_prototype.py` is a numeric, synthetic-only state-machine model. Run all
+tests to exercise unity transparency, gain, peak ceilings, finite-input rejection, stream/format
+transitions, fade-in, Spatial/direct bypass, and a small CPU measurement:
+
+```sh
+python3 -m unittest discover -s tools/replaygain-poc -p 'test_*.py'
+```
+
 The C probe generates ten seconds of a 1 kHz, 0.5-amplitude stereo sine in memory and sends it
 to the host's `libebur128`. It reports integrated LUFS, sample peak, and true peak. A host without
 the library exits with status 2; it is not a product build requirement.
@@ -51,4 +59,15 @@ not added to Gradle, Android JNI, or the APK. If considered for product use, obt
 upstream version and license notice, add Android builds for all supported ABIs, and re-run the
 runtime-license/relink review. This PoC does not claim Android performance or output-path
 equivalence.
+
+## Phase 8A product-path blocker
+
+The numeric prototype is not wired into Media3. `AudioProcessor` cannot see the current
+`MediaItem`, and production Studio processing is at the `AudioOutput` boundary where the output
+wrapper receives PCM but no item identity. A same-format transition can reuse that wrapper. A
+service listener updating a shared gain after `onMediaItemTransition` can therefore race the first
+PCM writes and apply stale gain. Direct/offload/tunneled output may also bypass the PCM processor.
+The prototype requires a stream token and format reset precisely to make this race visible; until
+Media3 supplies an item-bound processor contract or FLACtify owns a service-side generation/flush
+handshake, the product flag must stay disabled.
 
