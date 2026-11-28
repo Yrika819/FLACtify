@@ -1743,6 +1743,18 @@ class PlayerViewModel : ViewModel() {
         refreshPlaylists()
     }
 
+    fun createSmartPlaylist(name: String, query: SmartPlaylistQuery, existingId: String? = null) {
+        userLibraryController?.savePlaylist(
+            Playlist(id = existingId ?: java.util.UUID.randomUUID().toString(), name = name, smartQuery = query)
+        )
+        refreshPlaylists()
+    }
+
+    fun savePlaylist(playlist: Playlist) {
+        userLibraryController?.savePlaylist(playlist)
+        refreshPlaylists()
+    }
+
     fun deletePlaylist(id: String) {
         userLibraryController?.deletePlaylist(id)
         refreshPlaylists()
@@ -1755,6 +1767,18 @@ class PlayerViewModel : ViewModel() {
 
     fun getPlaylistTracks(playlistId: String, allTracks: List<TrackData>): List<TrackData> {
         return userLibraryController?.getPlaylistTracks(playlistId, allTracks) ?: emptyList()
+    }
+
+    fun createLibraryBackup(): String = userLibraryController?.createBackup().orEmpty()
+
+    fun restoreLibraryBackup(json: String, merge: Boolean = false): Boolean {
+        val restored = if (merge) userLibraryController?.mergeBackup(json) else userLibraryController?.restoreBackup(json)
+        if (restored == true) {
+            _favorites.value = userLibraryController?.getFavorites() ?: emptySet()
+            refreshPlaylists()
+            _statsVersion.value = _statsVersion.value + 1
+        }
+        return restored == true
     }
 
     fun setSpatialAudioMode(mode: SpatialAudioMode) {

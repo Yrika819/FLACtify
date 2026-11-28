@@ -99,6 +99,21 @@ class LibraryManager(context: Context) {
         }
     }
 
+    fun mergeBackup(json: String): Boolean {
+        val incoming = LibraryBackupCodec.decode(json) ?: return false
+        val existingPlaylists = getPlaylists()
+        val existingById = existingPlaylists.associateBy { it.id }
+        val mergedPlaylists = existingPlaylists + incoming.playlists.filterNot { existingById.containsKey(it.id) }
+        val existingStats = getAllStats()
+        val mergedStats = existingStats + incoming.stats.filterKeys { it !in existingStats }
+        val merged = LibraryBackup(
+            favorites = getFavorites() + incoming.favorites,
+            playlists = mergedPlaylists,
+            stats = mergedStats
+        )
+        return restoreBackup(LibraryBackupCodec.encode(merged))
+    }
+
     fun getCacheDirSize(): Long {
         return calculateDirSize(cacheDir)
     }
@@ -137,11 +152,26 @@ class LibraryManager(context: Context) {
      */
     fun restoreBackup(json: String): Boolean {
         val backup = LibraryBackupCodec.decode(json) ?: return false
+        val previous = LibraryBackup(
+            favorites = getFavorites(),
+            playlists = getPlaylists(),
+            stats = getAllStats()
+        )
         val restored = favPrefs.edit()
             .putStringSet("favorites", backup.favorites)
             .putString("playlists", LibraryBackupCodec.encodePlaylists(backup.playlists))
             .putString("stats", LibraryBackupCodec.encodeStats(backup.stats))
             .commit()
+        if (!restored) {
+            // SharedPreferences normally leaves values untouched on a failed commit, but the
+            // contract does not promise that. Best-effort rollback keeps a transient failure from
+            // exposing a partially replaced in-memory library.
+            favPrefs.edit()
+                .putStringSet("favorites", previous.favorites)
+                .putString("playlists", LibraryBackupCodec.encodePlaylists(previous.playlists))
+                .putString("stats", LibraryBackupCodec.encodeStats(previous.stats))
+                .commit()
+        }
         if (restored) {
             playlistsCanBeRewritten = true
             statsCanBeRewritten = true
@@ -227,6 +257,10 @@ class LibraryManager(context: Context) {
             query.yearContains?.let { put("yearContains", it) }
             query.composerContains?.let { put("composerContains", it) }
             query.albumArtistContains?.let { put("albumArtistContains", it) }
+            query.formatContains?.let { put("formatContains", it) }
+            put("preset", query.preset.name)
+            put("order", query.order.name)
+            query.limit?.let { put("limit", it) }
         }
 
         private fun smartQueryFromJson(obj: JSONObject): SmartPlaylistQuery? {
@@ -238,12 +272,20 @@ class LibraryManager(context: Context) {
                 genreContains = value("genreContains"),
                 yearContains = value("yearContains"),
                 composerContains = value("composerContains"),
-                albumArtistContains = value("albumArtistContains")
+                albumArtistContains = value("albumArtistContains"),
+                formatContains = value("formatContains"),
+                preset = runCatching { SmartPlaylistPreset.valueOf(obj.optString("preset")) }
+                    .getOrDefault(SmartPlaylistPreset.NONE),
+                order = runCatching { SmartPlaylistOrder.valueOf(obj.optString("order")) }
+                    .getOrDefault(SmartPlaylistOrder.LIBRARY),
+                limit = obj.optInt("limit", 0).takeIf { it in 1..100_000 }
             )
             return query.takeUnless {
                 it.titleContains == null && it.artistContains == null && it.albumContains == null &&
                     it.genreContains == null && it.yearContains == null && it.composerContains == null &&
-                    it.albumArtistContains == null
+                    it.albumArtistContains == null && it.formatContains == null &&
+                    it.preset == SmartPlaylistPreset.NONE && it.order == SmartPlaylistOrder.LIBRARY &&
+                    it.limit == null
             }
         }
 

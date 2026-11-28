@@ -356,6 +356,11 @@ fun SettingsScreen(
             }
 
             item {
+                SettingsSectionHeader("ライブラリのバックアップ")
+                LibraryBackupTransferSection(viewModel)
+            }
+
+            item {
                 SettingsSectionHeader("再生統計")
                 val statsVersion by viewModel.statsVersion.collectAsState()
                 val summary by remember(statsVersion) { mutableStateOf(viewModel.getStatsSummary()) }

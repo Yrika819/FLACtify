@@ -3,6 +3,7 @@ package com.flactify.viewmodel
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryBackupTest {
@@ -45,5 +46,29 @@ class LibraryBackupTest {
         root.getJSONObject("stats").getJSONObject("content://synthetic/one").put("skipCount", -1)
 
         assertNull(LibraryBackupCodec.decode(root.toString()))
+    }
+
+    @Test
+    fun `valid backup exposes bounded preview counts`() {
+        val encoded = LibraryBackupCodec.encode(
+            LibraryBackup(
+                favorites = setOf("content://synthetic/one"),
+                playlists = listOf(Playlist("one", "One")),
+                stats = emptyMap()
+            )
+        )
+
+        assertEquals(LibraryBackupPreview(1, 1, 1, 0), LibraryBackupCodec.preview(encoded))
+    }
+
+    @Test
+    fun `nested text budget rejects many individually valid strings`() {
+        val oversized = LibraryBackup(
+            favorites = emptySet(),
+            playlists = List(600) { index -> Playlist("id-$index", "x".repeat(16_000)) },
+            stats = emptyMap()
+        )
+
+        assertTrue(runCatching { LibraryBackupCodec.encode(oversized) }.isFailure)
     }
 }

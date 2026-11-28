@@ -52,10 +52,14 @@ import com.flactify.viewmodel.RecommendedTrack
 import com.flactify.viewmodel.TrackData
 import com.flactify.viewmodel.Playlist
 import com.flactify.viewmodel.LibrarySearch
+import com.flactify.viewmodel.M3uPlaylistCodec
+import com.flactify.viewmodel.toM3uPlaylist
 import com.flactify.viewmodel.TagEditFailureCategory
 import com.flactify.viewmodel.decodeArtworkBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.charset.StandardCharsets
 
 private enum class TrackSortMode(val label: String) {
     TITLE("曲名"),
@@ -169,7 +173,59 @@ fun LibraryScreen(
     var editingTrack by remember { mutableStateOf<TrackData?>(null) }
     var showPlaylistPicker by remember { mutableStateOf<TrackData?>(null) }
     var showCreatePlaylist by remember { mutableStateOf(false) }
+    var showSmartPlaylistEditor by remember { mutableStateOf<Playlist?>(null) }
+    var creatingSmartPlaylist by remember { mutableStateOf(false) }
     var showPlaylistContent by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingM3uExport by remember { mutableStateOf<Playlist?>(null) }
+    var m3uImportBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var m3uImportName by remember { mutableStateOf("playlist.m3u8") }
+    var playlistTransferMessage by remember { mutableStateOf<String?>(null) }
+    val transferScope = rememberCoroutineScope()
+
+    val m3uExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("audio/x-mpegurl")
+    ) { destination ->
+        val playlist = pendingM3uExport
+        pendingM3uExport = null
+        if (destination != null && playlist != null) {
+            transferScope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val tracks = viewModel.getPlaylistTracks(playlist.id, artistMap.values.flatten())
+                        val text = M3uPlaylistCodec.serialize(
+                            Playlist(
+                                playlist.id,
+                                playlist.name,
+                                tracks.map { it.uri.toString() }.filter { it.startsWith("content://", ignoreCase = true) }
+                            ).toM3uPlaylist()
+                        )
+                        context.contentResolver.openOutputStream(destination, "w")?.use {
+                            it.write(text.toByteArray(StandardCharsets.UTF_8))
+                        } ?: error("Unable to open selected destination")
+                    }
+                }
+                playlistTransferMessage = if (result.isSuccess) "M3Uを書き出しました" else "M3Uの書き出しに失敗しました"
+            }
+        }
+    }
+    val m3uImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { source ->
+        if (source != null) {
+            transferScope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(source)?.use { readSafBytesBounded(it, 8 * 1024 * 1024) }
+                            ?: error("Unable to open selected playlist")
+                    }
+                }
+                if (result.isSuccess) {
+                    m3uImportBytes = result.getOrThrow()
+                    m3uImportName = source.lastPathSegment?.substringAfterLast('/')?.ifBlank { "playlist.m3u8" } ?: "playlist.m3u8"
+                } else {
+                    playlistTransferMessage = "M3Uの読み込みに失敗しました"
+                }
+            }
+        }
+    }
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showFavoritesOnly by rememberSaveable { mutableStateOf(false) }
@@ -398,8 +454,14 @@ fun LibraryScreen(
                             PlaylistTabContent.List -> PlaylistsTab(
                                 viewModel = viewModel,
                                 playlists = playlists,
+                                allTracks = artistMap.values.flatten(),
                                 onShowPlaylist = { showPlaylistContent = it },
-                                onCreatePlaylist = { showCreatePlaylist = true }
+                                onCreatePlaylist = { showCreatePlaylist = true },
+                                onCreateSmartPlaylist = { creatingSmartPlaylist = true },
+                                onEditSmartPlaylist = { showSmartPlaylistEditor = it },
+                                onImportM3u = { m3uImportLauncher.launch(arrayOf("audio/x-mpegurl", "audio/mpegurl", "text/plain", "*/*")) },
+                                onExportM3u = { pendingM3uExport = it; m3uExportLauncher.launch("${it.name}.m3u8") },
+                                transferMessage = playlistTransferMessage
                             )
                             is PlaylistTabContent.Tracks -> {
                                 val tracks = viewModel.getPlaylistTracks(content.playlistId, artistMap.values.flatten())
@@ -495,6 +557,33 @@ fun LibraryScreen(
         }
         if (showCreatePlaylist) {
             CreatePlaylistDialog(viewModel = viewModel, onDismiss = { showCreatePlaylist = false })
+        }
+        if (creatingSmartPlaylist) {
+            SmartPlaylistEditorDialog(
+                existing = null,
+                onDismiss = { creatingSmartPlaylist = false },
+                onSave = { name, query, _ -> viewModel.createSmartPlaylist(name, query) }
+            )
+        }
+        showSmartPlaylistEditor?.let { playlist ->
+            SmartPlaylistEditorDialog(
+                existing = playlist,
+                onDismiss = { showSmartPlaylistEditor = null },
+                onSave = { name, query, id -> viewModel.createSmartPlaylist(name, query, id) }
+            )
+        }
+        m3uImportBytes?.let { bytes ->
+            M3uImportDialog(
+                bytes = bytes,
+                fileName = m3uImportName,
+                tracks = artistMap.values.flatten(),
+                playlists = playlists,
+                onDismiss = { m3uImportBytes = null },
+                onImport = { name, uris, replaceId ->
+                    viewModel.savePlaylist(Playlist(id = replaceId ?: java.util.UUID.randomUUID().toString(), name = name, trackUris = uris))
+                    playlistTransferMessage = "M3Uを取り込みました（${uris.size}件）"
+                }
+            )
         }
     }
 }
@@ -663,16 +752,34 @@ private fun RecommendationsTab(
 }
 
 @Composable
-private fun PlaylistsTab(viewModel: PlayerViewModel, playlists: List<Playlist>, onShowPlaylist: (String) -> Unit, onCreatePlaylist: () -> Unit) {
+private fun PlaylistsTab(
+    viewModel: PlayerViewModel,
+    playlists: List<Playlist>,
+    allTracks: List<TrackData>,
+    onShowPlaylist: (String) -> Unit,
+    onCreatePlaylist: () -> Unit,
+    onCreateSmartPlaylist: () -> Unit,
+    onEditSmartPlaylist: (Playlist) -> Unit,
+    onImportM3u: () -> Unit,
+    onExportM3u: (Playlist) -> Unit,
+    transferMessage: String?
+) {
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0x12FFFFFF)).clickable { onCreatePlaylist() }.padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF1DB954), modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(12.dp))
-                Text("新しいプレイリスト", color = Color(0xFF1DB954), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0x12FFFFFF)).clickable { onCreatePlaylist() }.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF1DB954), modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("新しいプレイリスト", color = Color(0xFF1DB954), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onCreateSmartPlaylist) { Text("スマートプレイリスト") }
+                    OutlinedButton(onClick = onImportM3u) { Text("M3Uを読み込む") }
+                }
+                transferMessage?.let { Text(it, color = Color(0xCCFFFFFF), fontSize = 12.sp) }
             }
         }
         if (playlists.isEmpty()) {
@@ -691,7 +798,15 @@ private fun PlaylistsTab(viewModel: PlayerViewModel, playlists: List<Playlist>, 
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = playlist.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text(text = "${playlist.trackUris.size}曲", color = Color.LightGray, fontSize = 13.sp)
+                        Text(text = "${viewModel.getPlaylistTracks(playlist.id, allTracks).size}曲", color = Color.LightGray, fontSize = 13.sp)
+                    }
+                    if (playlist.smartQuery != null) {
+                        IconButton(onClick = { onEditSmartPlaylist(playlist) }) {
+                            Icon(Icons.Default.Edit, contentDescription = "編集", tint = Color(0xAAFFFFFF), modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    IconButton(onClick = { onExportM3u(playlist) }) {
+                        Icon(Icons.Default.FileUpload, contentDescription = "M3Uを書き出す", tint = Color(0xAAFFFFFF), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = { viewModel.deletePlaylist(playlist.id) }) {
                         Icon(Icons.Default.Delete, contentDescription = "削除", tint = Color(0x66FFFFFF), modifier = Modifier.size(20.dp))

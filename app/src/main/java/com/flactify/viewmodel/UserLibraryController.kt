@@ -22,7 +22,17 @@ class UserLibraryController internal constructor(
 
     fun getPlaylistTracks(playlistId: String, allTracks: List<TrackData>): List<TrackData> {
         val playlist = getPlaylists().find { it.id == playlistId } ?: return emptyList()
-        playlist.smartQuery?.let { return it.filter(allTracks) }
+        playlist.smartQuery?.let {
+            val stats = getAllStats()
+            return it.filter(
+                allTracks,
+                SmartPlaylistContext(
+                    favorites = getFavorites(),
+                    playCounts = stats.mapValues { entry -> entry.value.playCount },
+                    lastPlayed = stats.mapValues { entry -> entry.value.lastPlayed }
+                )
+            )
+        }
         val uriMap = allTracks.associateBy { it.uri.toString() }
         return playlist.trackUris.mapNotNull { uriMap[it] }
     }
@@ -42,4 +52,6 @@ class UserLibraryController internal constructor(
     fun createBackup(): String = libraryManager.createBackup()
 
     fun restoreBackup(json: String): Boolean = libraryManager.restoreBackup(json)
+
+    fun mergeBackup(json: String): Boolean = libraryManager.mergeBackup(json)
 }

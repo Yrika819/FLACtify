@@ -10,16 +10,25 @@ data class LibraryBackup(
     val stats: Map<String, LibraryManager.PlayStats>
 )
 
+data class LibraryBackupPreview(
+    val version: Int,
+    val favoriteCount: Int,
+    val playlistCount: Int,
+    val statsCount: Int
+)
+
 /** Versioned JSON codec. Decode validates the complete snapshot before a caller restores it. */
 object LibraryBackupCodec {
     private const val VERSION = 1
     private const val MAX_ENTRIES = 100_000
     private const val MAX_TEXT = 16_384
+    private const val MAX_TOTAL_TEXT = 8 * 1024 * 1024
 
     fun encode(backup: LibraryBackup): String {
         require(backup.favorites.size <= MAX_ENTRIES)
         require(backup.playlists.size <= MAX_ENTRIES)
         require(backup.stats.size <= MAX_ENTRIES)
+        require(textBudget(backup) <= MAX_TOTAL_TEXT) { "Backup text budget exceeded" }
         val root = JSONObject()
             .put("version", VERSION)
             .put("favorites", JSONArray().apply {
@@ -94,8 +103,19 @@ object LibraryBackupCodec {
                 put(key, LibraryManager.PlayStats(plays, skips, lastPlayed))
             }
         }
-        LibraryBackup(favorites, playlists, stats)
+        LibraryBackup(favorites, playlists, stats).also {
+            require(textBudget(it) <= MAX_TOTAL_TEXT) { "Backup text budget exceeded" }
+        }
     }.getOrNull()
+
+    fun preview(json: String): LibraryBackupPreview? = decode(json)?.let {
+        LibraryBackupPreview(
+            version = VERSION,
+            favoriteCount = it.favorites.size,
+            playlistCount = it.playlists.size,
+            statsCount = it.stats.size
+        )
+    }
 
     internal fun encodePlaylists(playlists: List<Playlist>): String =
         JSONObject(encode(LibraryBackup(emptySet(), playlists, emptyMap())))
@@ -112,6 +132,10 @@ object LibraryBackupCodec {
         query.yearContains?.let { put("yearContains", validText(it, "smart query")) }
         query.composerContains?.let { put("composerContains", validText(it, "smart query")) }
         query.albumArtistContains?.let { put("albumArtistContains", validText(it, "smart query")) }
+        query.formatContains?.let { put("formatContains", validText(it, "smart query")) }
+        put("preset", query.preset.name)
+        put("order", query.order.name)
+        query.limit?.let { require(it > 0); put("limit", it) }
     }
 
     private fun queryFromJson(value: JSONObject): SmartPlaylistQuery = SmartPlaylistQuery(
@@ -121,7 +145,13 @@ object LibraryBackupCodec {
         genreContains = value.optString("genreContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") },
         yearContains = value.optString("yearContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") },
         composerContains = value.optString("composerContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") },
-        albumArtistContains = value.optString("albumArtistContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") }
+        albumArtistContains = value.optString("albumArtistContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") },
+        formatContains = value.optString("formatContains").takeIf(String::isNotEmpty)?.let { validText(it, "smart query") },
+        preset = runCatching { SmartPlaylistPreset.valueOf(value.optString("preset")) }.getOrDefault(SmartPlaylistPreset.NONE),
+        order = runCatching { SmartPlaylistOrder.valueOf(value.optString("order")) }.getOrDefault(SmartPlaylistOrder.LIBRARY),
+        limit = value.optInt("limit", 0).takeIf { it > 0 }?.also {
+            require(it <= MAX_ENTRIES) { "Smart query limit exceeds the entry limit" }
+        }
     )
 
     private fun validText(value: String, label: String): String {
@@ -129,5 +159,22 @@ object LibraryBackupCodec {
             "Invalid $label"
         }
         return value
+    }
+
+    private fun textBudget(backup: LibraryBackup): Long {
+        var total = backup.favorites.sumOf { it.length.toLong() }
+        backup.playlists.forEach { playlist ->
+            total += playlist.id.length + playlist.name.length
+            total += playlist.trackUris.sumOf { it.length.toLong() }
+            playlist.smartQuery?.let { query ->
+                total += listOfNotNull(
+                    query.titleContains, query.artistContains, query.albumContains,
+                    query.genreContains, query.yearContains, query.composerContains,
+                    query.albumArtistContains, query.formatContains
+                ).sumOf { it.length.toLong() }
+            }
+        }
+        total += backup.stats.keys.sumOf { it.length.toLong() }
+        return total
     }
 }

@@ -49,6 +49,30 @@ class SmartPlaylistTest {
         assertEquals(tracks, SmartPlaylistQuery().filter(tracks))
     }
 
+    @Test
+    fun `presets use explicit stats and favorites without inventing date added`() {
+        val first = track("First")
+        val second = track("Second")
+        val context = SmartPlaylistContext(
+            favorites = setOf(first.uri.toString()),
+            playCounts = mapOf(first.uri.toString() to 4, second.uri.toString() to 0),
+            lastPlayed = mapOf(first.uri.toString() to 100L, second.uri.toString() to 200L)
+        )
+
+        assertEquals(listOf("First"), SmartPlaylistQuery(preset = SmartPlaylistPreset.FAVORITES).filter(listOf(first, second), context).map { it.title })
+        assertEquals(listOf("Second", "First"), SmartPlaylistQuery(preset = SmartPlaylistPreset.RECENT).filter(listOf(first, second), context).map { it.title })
+        assertEquals(listOf("Second"), SmartPlaylistQuery(preset = SmartPlaylistPreset.LOW_PLAY_COUNT).filter(listOf(first, second), context).map { it.title })
+    }
+
+    @Test
+    fun `order and limit apply after conditions`() {
+        val tracks = listOf(track("C"), track("A"), track("B"))
+
+        val query = SmartPlaylistQuery(order = SmartPlaylistOrder.TITLE, limit = 2)
+
+        assertEquals(listOf("A", "B"), query.filter(tracks).map { it.title })
+    }
+
     private fun track(
         title: String,
         artist: String = "Artist",
