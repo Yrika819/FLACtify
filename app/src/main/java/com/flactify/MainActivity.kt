@@ -11,7 +11,13 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,9 +41,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.flactify.ui.LibraryScreen
+import com.flactify.ui.MiniPlayer
+import com.flactify.ui.MiniPlayerFeature
+import com.flactify.ui.shouldShowMiniPlayer
 import com.flactify.ui.PlayerScreen
 import com.flactify.ui.SettingsScreen
 import com.flactify.viewmodel.PlayerViewModel
+import com.flactify.viewmodel.NowPlayingUiState
 import com.flactify.viewmodel.StartupState
 import androidx.compose.animation.core.animateFloatAsState
 import kotlinx.coroutines.delay
@@ -65,9 +75,15 @@ class MainActivity : ComponentActivity() {
             val currentThemeColor by viewModel.themeColor.collectAsState()
 
             var currentScreen by rememberSaveable { mutableStateOf("splash") }
+            var miniPlayerReturnScreen by rememberSaveable { mutableStateOf<String?>(null) }
             val screenStateHolder = rememberSaveableStateHolder()
 
+            BackHandler(enabled = currentScreen == "player" && miniPlayerReturnScreen != null) {
+                currentScreen = miniPlayerReturnScreen ?: "library"
+                miniPlayerReturnScreen = null
+            }
             BackHandler(enabled = currentScreen == "library" || currentScreen == "settings") {
+                miniPlayerReturnScreen = null
                 currentScreen = "player"
             }
 
@@ -109,37 +125,76 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFF121212)
                 ) {
-                    // 🚀 【素早く切り替え】150ms でプレイヤー画面へ移行
-                    Crossfade(
-                        targetState = currentScreen,
-                        animationSpec = tween(durationMillis = 150)
-                    ) { screen ->
-                        screenStateHolder.SaveableStateProvider(screen) {
-                            when (screen) {
-                            "splash" -> {
-                                AnimatedSplashScreen()
+                    val nowPlaying by viewModel.nowPlayingContentState.collectAsState(
+                        initial = NowPlayingUiState()
+                    )
+                    val miniPlayerVisible = shouldShowMiniPlayer(
+                        enabled = MiniPlayerFeature.ENABLED,
+                        currentScreen = currentScreen,
+                        hasCurrentTrack = nowPlaying.current != null
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (miniPlayerVisible) Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+                                else Modifier
+                            )
+                            .imePadding()
+                    ) {
+                        // The mini player takes layout space, so screen content and list tails
+                        // remain reachable. SaveableStateProvider restores the previous route.
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            // 🚀 【素早く切り替え】150ms でプレイヤー画面へ移行
+                            Crossfade(
+                                targetState = currentScreen,
+                                animationSpec = tween(durationMillis = 150)
+                            ) { screen ->
+                                screenStateHolder.SaveableStateProvider(screen) {
+                                    when (screen) {
+                                        "splash" -> AnimatedSplashScreen()
+                                        "player" -> PlayerScreen(
+                                            viewModel = viewModel,
+                                            onSelectFolder = { selectFolderLauncher.launch(null) },
+                                            onOpenLibrary = {
+                                                miniPlayerReturnScreen = null
+                                                currentScreen = "library"
+                                            },
+                                            onOpenSettings = {
+                                                miniPlayerReturnScreen = null
+                                                currentScreen = "settings"
+                                            }
+                                        )
+                                        "library" -> LibraryScreen(
+                                            viewModel = viewModel,
+                                            onBackClick = {
+                                                miniPlayerReturnScreen = null
+                                                currentScreen = "player"
+                                            }
+                                        )
+                                        "settings" -> SettingsScreen(
+                                            viewModel = viewModel,
+                                            onBackClick = {
+                                                miniPlayerReturnScreen = null
+                                                currentScreen = "player"
+                                            }
+                                        )
+                                    }
+                                }
                             }
-                            "player" -> {
-                                PlayerScreen(
-                                    viewModel = viewModel,
-                                    onSelectFolder = { selectFolderLauncher.launch(null) },
-                                    onOpenLibrary = { currentScreen = "library" },
-                                    onOpenSettings = { currentScreen = "settings" }
-                                )
-                            }
-                            "library" -> {
-                                LibraryScreen(
-                                    viewModel = viewModel,
-                                    onBackClick = { currentScreen = "player" }
-                                )
-                            }
-                            "settings" -> {
-                                SettingsScreen(
-                                    viewModel = viewModel,
-                                    onBackClick = { currentScreen = "player" }
-                                )
-                            }
-                            }
+                        }
+
+                        if (miniPlayerVisible) {
+                            MiniPlayer(
+                                viewModel = viewModel,
+                                nowPlaying = nowPlaying,
+                                onOpenFullPlayer = {
+                                    miniPlayerReturnScreen = currentScreen
+                                    currentScreen = "player"
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                 }
