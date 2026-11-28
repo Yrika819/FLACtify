@@ -1,6 +1,19 @@
 # v3.0.0 リリース前確認報告
 
-**判断：BLOCKED — production Release APKは未生成**
+## 最新更新 — Phase 10A-R1
+
+2026-11-28時点の候補はDraft PR #37（`main` base、`fix/v3.0.0-stats-restore-p0`）です。元の候補PR #36とbranchは保全しています。
+
+- 指定された候補HEAD `4bfebeaa8dd872b0880fdbb85c87ceb18da45440` / tree `50292d79144c27b0cdfc5cdcf7fd83519dbad47e`を基点に、再生統計のP0データ損失を修正しました。
+- 現行修正HEAD `96035f9027cc6abc782184d989642ae44442ab12` / tree `cd3e7c85fd77bc3d10f7dbd4db4f7c550c77f931`。独立レビュー（GPT-6 Luna High）はP0/P1の残存ブロッカーなしと判定しました。
+- 最終HEADのAndroid validation、CodeQL、LGPL relink、Fresh-extraction ComplianceはPR #37のGitHub checksで確認します。以前のHEADやローカル結果を最終HEADのCI成功として扱いません。
+- FoundationClosure APKと合成fixtureをOwner限定Driveへ引き渡し済みです。APKはデバッグ署名・試験用IDで、production APKではありません。
+- Gate 3 reconnect paused-retentionは未解決の条件付き残存リスクのままです。Phase 9の結果はGate 3 PASSを意味しません。今回のGate 3実機再接続試験は行っていません。
+- PR #37はDraftのままです。mainへの統合、署名、production install、tag、公開は行っていません。
+
+以下はPR #36の初回レビュー時点の履歴記録です。現況と異なる記述は上記のPhase 10A-R1更新で置き換えます。
+
+**当初判断：BLOCKED — production Release APKは未生成**
 
 この候補は、Owner実機評価済みPR #35 HEADからのリリースメタデータ準備です。レビューでHIGHのデータ保全不具合が特定されたため、公式production Releaseの実装継続・ビルド・公開へは進みません。後述のローカル非production検証variantは実行済みですが、公式unsigned production Release APKは未生成です。
 
@@ -17,13 +30,13 @@
 
 versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候補18は単調増加です。正式リリース前に最終ブランチとversion設定を再確認します。
 
-## HIGH release blocker：バックアップ復元後の再生統計不整合
+## 初回レビューで確認したP0：バックアップ復元後の再生統計不整合（PR #37で修正）
 
 `LibraryBackup.kt`は統計を`playCount`、`skipCount`、`lastPlayed`キーでエンコードします（50–56行）。`LibraryManager.restoreBackup()`は同形式を`stats` preferenceへそのまま保存し、成功時に`statsCanBeRewritten = true`とします（165–190行）。一方、通常の`LibraryManager.parseStats()`は`pc`、`sc`、`lp`キーのみ読みます（311–328行）。
 
 そのため、復元直後に通常ロードすると各値が0として読み取られます。読み込まれたentry数はJSONのkey数と一致するため、`getAllStats()`のrewrite guardもtrueになります（130–136行）。次に`recordPlay()`または`recordSkip()`が`saveAllStats()`を呼ぶと、復元値をゼロ相当の値で書き換える可能性があります（201–234行）。これは再生統計の静かなデータ損失にあたります。OwnerのPhase 9評価で報告された別機能のPASSは、この経路を否定するものではありません。
 
-**この候補では修正しません。** 再生統計バックアップを復元し、アプリ再起動後も値が維持され、次の再生・スキップ記録後も保持される回帰確認が完了するまで、production Release APKを生成しません。
+初回レビューの候補HEADでは未修正でした。PR #37では内部永続化codecとバックアップ交換codecを分離し、通常保存・通常復元・merge・rollback・journal retryを内部`pc/sc/lp`形式に統一しました。v2.5.2形式と過去のバックアップ形式を読み取り、欠落・不正・競合行は推測せず書き戻しを止めます。rollbackは元のraw preference値を保持し、再生/skipとrestoreはプロセス内lockで直列化します。SharedPreferences経路を通す回帰試験を追加しました。修正後も正式統合・本番更新は別途判断です。
 
 ## データ互換性・更新条件
 
@@ -43,7 +56,7 @@ versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候
 | ReplayGain / EQ | 数値PoCのみ。通常の再生経路へ統合されておらず利用機能ではない。 |
 | 製品画面の自動画像試験 | 未確立。Ownerの実機目視結果とCloud試験を混同しない。 |
 | Android性能計測 | PSS、jank、frame timeは未測定。 |
-| 再生統計バックアップ | HIGH blocker。復元後の通常読み取り・再保存で値が失われる可能性がある。 |
+| 再生統計バックアップ | 初回レビュー時のP0はPR #37で修正。最終HEADの必須CI完了とOwner実機再検証は別ゲート。 |
 
 ## PR包含・統合方針
 
@@ -56,6 +69,8 @@ versionCode履歴ではv2.5.1が16、Ownerが受理したv2.5.2が17です。候
 | #34 | `main` | `cb123655fbe7f62bbdc2b8eb9d6b1c675c90f122` | Open Draft。#35の祖先に含まれる。 |
 | #35 | `main` | `e03dcd9cbd5591e61505387afe9364b7df988dc0` | Open Draft。上記の累積候補。 |
 | #33 | `phase8/autonomous-development` | `4861c2c72d0da5cf44dd737e69fe74526da74ff3` | Open Draft。#35と独立したReplayGain/EQ研究PoC。 |
+| #36 | `main` | `4bfebeaa8dd872b0880fdbb85c87ceb18da45440` | Open Draft。保全対象のv3.0.0 candidate。head変更・closeなし。 |
+| #37 | `main` | `96035f9027cc6abc782184d989642ae44442ab12` | Open Draft。Phase 10A-R1統計復元修正を含む累積候補。 |
 
 #35の祖先に含まれるPRの変更は累積されています。古い累積PRを個別にマージすると変更が重複するため、#35を統合候補として扱い、統合前に各headの祖先関係とmainとの差分をGitHub上で再確認します。PR #33は統合せず、独立PoCとして保全します。今は既存PRを個別にマージせず、いずれもクローズしません。
 
