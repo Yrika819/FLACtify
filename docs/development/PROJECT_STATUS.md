@@ -155,15 +155,15 @@ remain untouched.
 | Performance | POC / UNVERIFIED on device | Synthetic JVM tests at 1k/10k/50k report host timings only; no device PSS, jank, SAF-provider latency, or frame-time measurement. |
 | UI screenshot validation | POC | Existing isolated Compose smoke render passed, but it does not draw product screens; product screenshot verification remains unavailable without dependency changes. |
 
-At candidate revision `e7b7e395053cce5d77e172113281755e4adb5c6c`, Cloud verification passed:
-482 JVM tests, full `test` lifecycle, lint, Debug APK, ReleaseValidation/R8, FoundationClosure
+At candidate revision `fe4c003254d82010987182854b6fa8c6cd1523b2`, Cloud verification passed:
+483 JVM tests, full `test` lifecycle, lint, Debug APK, ReleaseValidation/R8, FoundationClosure
 APK, FoundationClosure instrumentation compilation, 16 KiB APK ZIP/native ELF checks, and
-LGPL relink proof. The debug APK is 53 MiB and unsigned ReleaseValidation APK is 35 MiB. A
-controlled same-variant debug build comparison measured 54,793,946 bytes at Phase 7G
+LGPL relink proof. The debug APK is 52.66 MiB and unsigned ReleaseValidation APK is 35 MiB.
+A controlled same-variant debug build comparison measured 54,793,946 bytes at Phase 7G
 baseline `b69d1e6` and 55,213,658 bytes at the Phase 8 candidate (+419,712 bytes / 409.9
-KiB). This is debug APK size only, not a production APK delta. PR CodeQL Java/Kotlin and
-C/C++, Fresh-extraction compliance, and LGPL relink passed; PR Android validation was still
-completing at this checkpoint. Owner device checks remain unperformed.
+KiB). This is debug APK size only, not a production APK delta. GitHub CodeQL Java/Kotlin and
+C/C++, Fresh-extraction compliance, and LGPL relink passed on earlier candidate revisions;
+the same required checks are running for `fe4c003`. Owner device checks remain unperformed.
 
 The candidate is intended for a Draft PR against `main`; no merge, production signing,
 production release, public distribution, or device operation is authorized.
