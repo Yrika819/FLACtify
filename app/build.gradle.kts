@@ -148,8 +148,8 @@ android {
         applicationId = "com.flactify"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "2.5.2"
+        versionCode = 18
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -316,6 +316,9 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    // Android's mockable org.json stubs return null on the host JVM; use the API-compatible
+    // JSON-java implementation to exercise backup serialization in local unit tests.
+    testImplementation("com.vaadin.external.google:android-json:0.0.20131108.vaadin1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("io.mockk:mockk:1.13.8")
     testImplementation("io.mockk:mockk-agent-jvm:1.13.8")

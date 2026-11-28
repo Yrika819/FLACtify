@@ -1,10 +1,12 @@
 package com.flactify.ui
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -15,8 +17,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,12 +37,32 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.flactify.viewmodel.ArtworkState
 import com.flactify.viewmodel.NowPlayingUiState
 import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.PlaybackState
+
+private val MiniPlayerFallbackBackground = Color(0xFF29292D)
+private val MiniPlayerArtworkPlaceholder = Color(0xFF1E1E22)
+private val MiniPlayerSecondaryText = Color.White.copy(alpha = 0.76f)
+
+/** Mixes the existing artwork accent into a dark base so bright art never creates a light card. */
+internal fun miniPlayerBackgroundColor(themeColor: Int?, hasArtwork: Boolean): Color {
+    if (!hasArtwork || themeColor == null) return MiniPlayerFallbackBackground
+
+    val accentWeight = 0.30f
+    val base = 18f / 255f
+    val red = ((themeColor ushr 16) and 0xFF) / 255f
+    val green = ((themeColor ushr 8) and 0xFF) / 255f
+    val blue = (themeColor and 0xFF) / 255f
+    return Color(
+        red = base * (1f - accentWeight) + red * accentWeight,
+        green = base * (1f - accentWeight) + green * accentWeight,
+        blue = base * (1f - accentWeight) + blue * accentWeight,
+        alpha = 1f
+    )
+}
 
 /** Internal rollout switch; no user setting or persisted flag is introduced. */
 internal object MiniPlayerFeature {
@@ -64,6 +89,7 @@ internal fun MiniPlayer(
     modifier: Modifier = Modifier
 ) {
     val cachedAlbumArt by viewModel.albumArt.collectAsState()
+    val themeColor by viewModel.themeColor.collectAsState()
     val current = nowPlaying.current ?: return
     val title = current.title?.takeIf(String::isNotBlank) ?: "不明な曲"
     val artist = current.artist?.takeIf(String::isNotBlank) ?: "不明なアーティスト"
@@ -74,20 +100,23 @@ internal fun MiniPlayer(
     val artworkUri = artwork?.artworkUri?.takeIf {
         artwork.source == ArtworkState.Available.Source.MEDIA3
     }
+    val hasArtwork = artwork != null && (cachedArtwork != null || artworkUri != null)
+    val miniPlayerBackground = miniPlayerBackgroundColor(themeColor, hasArtwork)
 
     Surface(
         modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0xFF29292D),
+        shape = RoundedCornerShape(16.dp),
+        color = miniPlayerBackground,
         contentColor = Color.White,
-        shadowElevation = 4.dp
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+        shadowElevation = 3.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 72.dp)
+            .heightIn(min = 76.dp)
                 .clickable(role = Role.Button, onClickLabel = "フルプレイヤーを開く", onClick = onOpenFullPlayer)
-                .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -96,36 +125,47 @@ internal fun MiniPlayer(
                 artworkUri = artworkUri,
                 description = "$title のアルバムアート"
             )
-            androidx.compose.foundation.layout.Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = title,
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = miniPlayerArtistLabel(artist, nowPlaying.playbackState),
-                    color = Color(0xFFCCCCD0),
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            IconButton(
-                onClick = viewModel::playPause,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (nowPlaying.isPlaying) "一時停止" else "再生",
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val availableWidth = maxWidth
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    androidx.compose.foundation.layout.Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = miniPlayerArtistLabel(artist, nowPlaying.playbackState),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MiniPlayerSecondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (availableWidth >= 400.dp) {
+                        IconButton(onClick = viewModel::previous, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "前の曲")
+                        }
+                    }
+                    IconButton(onClick = viewModel::next, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.SkipNext, contentDescription = "次の曲")
+                    }
+                    IconButton(onClick = viewModel::playPause, modifier = Modifier.size(48.dp)) {
+                        Icon(
+                            imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (nowPlaying.isPlaying) "一時停止" else "再生",
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -140,7 +180,7 @@ private fun MiniPlayerArtwork(
     Box(
         modifier = Modifier
             .size(48.dp)
-            .clip(RoundedCornerShape(7.dp)),
+            .clip(RoundedCornerShape(9.dp)),
         contentAlignment = Alignment.Center
     ) {
         when {
@@ -157,12 +197,12 @@ private fun MiniPlayerArtwork(
                 contentScale = ContentScale.Crop
             )
             else -> {
-                Surface(color = Color(0xFF414148), shape = RoundedCornerShape(7.dp)) {
+                Surface(color = MiniPlayerArtworkPlaceholder, shape = RoundedCornerShape(9.dp)) {
                     Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.MusicNote,
                             contentDescription = description,
-                            tint = Color(0xFFDDDEE3),
+                            tint = Color.White.copy(alpha = 0.82f),
                             modifier = Modifier.size(26.dp)
                         )
                     }

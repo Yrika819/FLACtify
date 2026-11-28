@@ -1,9 +1,11 @@
 package com.flactify.ui
 
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -16,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -35,7 +38,11 @@ import com.flactify.viewmodel.PlayerViewModel
 import com.flactify.viewmodel.NowPlayingUiState
 import com.flactify.viewmodel.PositionState
 import com.flactify.viewmodel.ArtworkState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.media3.common.Player
+import com.flactify.PlaybackSettings
+import com.flactify.viewmodel.PlaybackQueueSnapshot
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -55,6 +62,34 @@ fun PlayerScreen(
     val albumArt = cachedAlbumArt.takeIf { artwork?.source == ArtworkState.Available.Source.TRACK_CACHE }
     val artworkUri = artwork?.artworkUri?.takeIf { artwork?.source == ArtworkState.Available.Source.MEDIA3 }
     val lyrics by viewModel.lyrics.collectAsState()
+    val context = LocalContext.current
+    val selectedTreeUri = context
+        .getSharedPreferences(PlaybackSettings.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
+        .getString("last_uri", null)
+        ?.let(Uri::parse)
+    val track = nowPlaying.current
+    val libraryRefreshGeneration by viewModel.libraryRefreshGeneration.collectAsState()
+    val externalLyricsResult by produceState(
+        initialValue = ExternalLyricsLoadResult(ExternalLyricsStatus.UNAVAILABLE),
+        key1 = track?.identity?.stableKey,
+        key2 = selectedTreeUri,
+        key3 = libraryRefreshGeneration
+    ) {
+        val currentTrack = track ?: return@produceState
+        value = withContext(Dispatchers.IO) {
+            loadExternalLyrics(
+                resolver = context.contentResolver,
+                trackKey = currentTrack.identity.stableKey,
+                trackUri = currentTrack.identity.uri,
+                selectedTreeUri = selectedTreeUri,
+                libraryGeneration = libraryRefreshGeneration
+            )
+        }
+    }
+    val trackLyricsKey = track?.identity?.stableKey
+    var useExternalLyrics by remember(trackLyricsKey) { mutableStateOf(false) }
+    var lyricOffsetMs by remember(trackLyricsKey) { mutableLongStateOf(0L) }
+    val selectedLyrics = lyricsForDisplay(lyrics, externalLyricsResult, useExternalLyrics)
     val isShuffleMode = nowPlaying.shuffleEnabled
     val repeatMode = nowPlaying.repeatMode
     val audioInfo by viewModel.audioInfo.collectAsState()
@@ -62,10 +97,12 @@ fun PlayerScreen(
     val diagnostics by viewModel.diagnostics.collectAsState()
     val trackList by viewModel.trackList.collectAsState()
     val isScanning by viewModel.isScanningArtists.collectAsState()
+    val playbackQueue by viewModel.playbackQueue.collectAsState()
 
     var offsetX by remember { mutableStateOf(0f) }
     var showLyricsSheet by remember { mutableStateOf(false) }
     var showDiagnosticsSheet by remember { mutableStateOf(false) }
+    var showQueueSheet by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -146,6 +183,9 @@ fun PlayerScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { showQueueSheet = true }) {
+                            Icon(Icons.Default.QueueMusic, contentDescription = "再生キュー", tint = Color.White)
+                        }
                         IconButton(onClick = onOpenSettings) {
                             Icon(Icons.Default.Settings, contentDescription = "設定", tint = Color.White)
                         }
@@ -351,7 +391,11 @@ fun PlayerScreen(
                             .height(44.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
-                        CurrentLyricLabel(viewModel, lyrics.isNotEmpty()) { showLyricsSheet = true }
+                        CurrentLyricLabel(
+                            viewModel = viewModel,
+                            lyrics = applyLyricsOffset(selectedLyrics, lyricOffsetMs),
+                            hasLyrics = selectedLyrics.isNotEmpty()
+                        ) { showLyricsSheet = true }
                     }
 
                         }
@@ -360,7 +404,10 @@ fun PlayerScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 60.dp)
+                            // The player can be shown without the mini-player; use the actual
+                            // navigation inset instead of a fixed spacer that varies by device.
+                            .navigationBarsPadding()
+                            .padding(bottom = 16.dp)
                     ) {
                         PlayerProgress(viewModel)
 
@@ -442,7 +489,24 @@ fun PlayerScreen(
         }
 
         if (showLyricsSheet) {
-            LyricsBottomSheet(viewModel, lyrics) { showLyricsSheet = false }
+            LyricsBottomSheet(
+                viewModel = viewModel,
+                embeddedLyrics = lyrics,
+                externalLyrics = externalLyricsResult.lyrics,
+                externalLyricsStatus = externalLyricsResult.status,
+                useExternalLyrics = useExternalLyrics,
+                onUseExternalLyricsChanged = { useExternalLyrics = it },
+                manualOffsetMs = lyricOffsetMs,
+                onManualOffsetChanged = { lyricOffsetMs = it },
+                onDismiss = { showLyricsSheet = false }
+            )
+        }
+        if (showQueueSheet) {
+            QueueBottomSheet(
+                viewModel = viewModel,
+                queue = playbackQueue,
+                onDismiss = { showQueueSheet = false }
+            )
         }
     }
 }
@@ -484,10 +548,17 @@ private fun PlayerProgress(viewModel: PlayerViewModel) {
 @Composable
 private fun CurrentLyricLabel(
     viewModel: PlayerViewModel,
+    lyrics: List<Pair<Long, String>>,
     hasLyrics: Boolean,
     onOpenLyrics: () -> Unit
 ) {
-    val currentLyrics by viewModel.currentLyrics.collectAsState()
+    val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
+    val currentLyrics = if (lyrics.any { it.first >= 0L }) {
+        val index = activeLyricsIndex(lyrics, position.positionMs)
+        if (index >= 0) lyrics[index].second else ""
+    } else {
+        lyrics.joinToString("\n") { it.second }
+    }
     if (currentLyrics.isNotEmpty()) {
         Text(
             text = currentLyrics,
@@ -505,6 +576,13 @@ private fun CurrentLyricLabel(
             fontSize = 13.sp,
             modifier = Modifier.clickable(onClick = onOpenLyrics)
         )
+    } else {
+        Text(
+            text = "歌詞なし",
+            color = Color(0x66FFFFFF),
+            fontSize = 13.sp,
+            modifier = Modifier.clickable(onClick = onOpenLyrics)
+        )
     }
 }
 
@@ -512,15 +590,35 @@ private fun CurrentLyricLabel(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun LyricsBottomSheet(
     viewModel: PlayerViewModel,
-    lyrics: List<Pair<Long, String>>,
+    embeddedLyrics: List<Pair<Long, String>>,
+    externalLyrics: List<Pair<Long, String>>,
+    externalLyricsStatus: ExternalLyricsStatus,
+    useExternalLyrics: Boolean,
+    onUseExternalLyricsChanged: (Boolean) -> Unit,
+    manualOffsetMs: Long,
+    onManualOffsetChanged: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
-    val activeLyricIndex = lyrics.indexOfLast { it.first <= position.positionMs }
+    val lyrics = lyricsForDisplay(
+        embeddedLyrics,
+        ExternalLyricsLoadResult(externalLyricsStatus, externalLyrics),
+        useExternalLyrics
+    )
+    val displayedLyrics = remember(lyrics, manualOffsetMs) {
+        applyLyricsOffset(lyrics, manualOffsetMs)
+    }
+    val activeLyricIndex = activeLyricsIndex(displayedLyrics, position.positionMs)
     val lyricsListState = rememberLazyListState()
+    val isDragged by lyricsListState.interactionSource.collectIsDraggedAsState()
+    var manualScroll by remember { mutableStateOf(false) }
 
-    LaunchedEffect(activeLyricIndex) {
-        if (activeLyricIndex >= 0 && activeLyricIndex < lyrics.size) {
+    LaunchedEffect(isDragged) {
+        if (isDragged) manualScroll = true
+    }
+
+    LaunchedEffect(activeLyricIndex, manualScroll) {
+        if (!manualScroll && activeLyricIndex >= 0 && activeLyricIndex < displayedLyrics.size) {
             lyricsListState.animateScrollToItem(activeLyricIndex)
         }
     }
@@ -534,24 +632,254 @@ private fun LyricsBottomSheet(
         ) {
             Text("歌詞", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(12.dp))
+            if (embeddedLyrics.isEmpty() && externalLyrics.isEmpty()) {
+                Text(
+                    text = when (externalLyricsStatus) {
+                        ExternalLyricsStatus.FOUND -> "この曲には歌詞がありません"
+                        ExternalLyricsStatus.NOT_FOUND -> "外部LRCファイルが見つかりません"
+                        ExternalLyricsStatus.UNAVAILABLE -> "外部歌詞を利用できません（フォルダ権限またはproviderの制約）"
+                        ExternalLyricsStatus.INVALID -> "外部LRCの形式またはサイズを確認してください"
+                        ExternalLyricsStatus.ERROR -> "外部LRCの読み込みに失敗しました"
+                    },
+                    color = Color(0x99FFFFFF),
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            } else if (embeddedLyrics.isNotEmpty() && externalLyricsStatus != ExternalLyricsStatus.FOUND) {
+                Text(
+                    text = when (externalLyricsStatus) {
+                        ExternalLyricsStatus.NOT_FOUND -> "外部LRCなし・埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.UNAVAILABLE -> "外部LRCは利用できないため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.INVALID -> "外部LRCを読み取れないため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.ERROR -> "外部LRCの読み込みに失敗したため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.FOUND -> ""
+                    },
+                    color = Color(0x99FFFFFF),
+                    fontSize = 12.sp
+                )
+            }
+            if (embeddedLyrics.isNotEmpty() && externalLyrics.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !useExternalLyrics,
+                        onClick = { onUseExternalLyricsChanged(false) },
+                        label = { Text("埋め込み") }
+                    )
+                    FilterChip(
+                        selected = useExternalLyrics,
+                        onClick = { onUseExternalLyricsChanged(true) },
+                        label = { Text("外部 .lrc") }
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "オフセット ${formatOffset(manualOffsetMs)}",
+                    color = Color(0xCCFFFFFF),
+                    fontSize = 13.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { onManualOffsetChanged((manualOffsetMs - 100L).coerceAtLeast(-30_000L)) }) {
+                    Text("−0.1s")
+                }
+                TextButton(onClick = { onManualOffsetChanged((manualOffsetMs + 100L).coerceAtMost(30_000L)) }) {
+                    Text("+0.1s")
+                }
+            }
+            if (manualScroll) {
+                TextButton(onClick = { manualScroll = false }) {
+                    Text("現在の歌詞へ追従")
+                }
+            }
             LazyColumn(
                 state = lyricsListState,
-                modifier = Modifier.fillMaxSize(),
+                // Keep the controls and source selector visible at large font scales. The list
+                // receives only the remaining sheet height instead of overflowing the column.
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
                 contentPadding = PaddingValues(bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                itemsIndexed(lyrics) { index, (_, line) ->
-                    Text(
-                        text = line,
-                        color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
-                        fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
-                        fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                if (displayedLyrics.isEmpty()) {
+                    item {
+                        Text(
+                            text = "この曲には歌詞がありません",
+                            color = Color(0x99FFFFFF),
+                            fontSize = 16.sp,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                } else {
+                    itemsIndexed(displayedLyrics) { index, (timestamp, line) ->
+                        Text(
+                            text = line,
+                            color = if (index == activeLyricIndex) Color(0xFF1DB954) else Color(0xCCFFFFFF),
+                            fontSize = if (index == activeLyricIndex) 22.sp else 18.sp,
+                            fontWeight = if (index == activeLyricIndex) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = timestamp >= 0L) {
+                                    // Offset changes lyric display timing; seek the source timestamp.
+                                    viewModel.seekTo(lyrics[index].first)
+                                }
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+private fun formatOffset(offsetMs: Long): String = when {
+    offsetMs == 0L -> "0.0s"
+    offsetMs < 0L -> "−${String.format(java.util.Locale.US, "%.1f", -offsetMs / 1000.0)}s"
+    else -> "+${String.format(java.util.Locale.US, "%.1f", offsetMs / 1000.0)}s"
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun QueueBottomSheet(
+    viewModel: PlayerViewModel,
+    queue: PlaybackQueueSnapshot,
+    onDismiss: () -> Unit
+) {
+    var showSaveDialog by remember { mutableStateOf(false) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF1A1A1A)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .padding(horizontal = 20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("再生キュー", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                TextButton(
+                    onClick = { showSaveDialog = true },
+                    enabled = queue.items.isNotEmpty()
+                ) {
+                    Text("プレイリストに保存", color = Color(0xFF1DB954))
+                }
+            }
+            if (queue.shuffleEnabled) {
+                Text(
+                    "シャッフル中は「次に再生」と並び替えを無効にしています。",
+                    color = Color(0x99FFFFFF),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+            if (queue.items.isEmpty()) {
+                Text("キューは空です", color = Color(0x99FFFFFF), modifier = Modifier.padding(vertical = 24.dp))
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    itemsIndexed(queue.items) { index, item ->
+                        val isCurrent = index == queue.currentIndex
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isCurrent) Color(0x2233CC66) else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title.ifEmpty { "不明" },
+                                    color = if (isCurrent) Color(0xFF1DB954) else Color.White,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = item.artist.ifEmpty { "不明なアーティスト" },
+                                    color = Color(0x99FFFFFF),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.moveQueueItem(index, index - 1) },
+                                enabled = !queue.shuffleEnabled && index > 0
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "上へ", tint = Color.White)
+                            }
+                            IconButton(
+                                onClick = { viewModel.moveQueueItem(index, index + 1) },
+                                enabled = !queue.shuffleEnabled && index < queue.items.lastIndex
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "下へ", tint = Color.White)
+                            }
+                            IconButton(
+                                onClick = { viewModel.removeQueueItem(index) },
+                                enabled = !isCurrent
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = if (isCurrent) "再生中の曲は削除できません" else "キューから削除",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (showSaveDialog) {
+        SaveQueueDialog(
+            onDismiss = { showSaveDialog = false },
+            onSave = { name ->
+                val saved = viewModel.savePlaybackQueueAsPlaylist(name)
+                if (saved) showSaveDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun SaveQueueDialog(
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("キューを保存") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("プレイリスト名") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(name) }, enabled = name.trim().isNotEmpty()) {
+                Text("保存")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
+    )
 }
 
 private fun formatTime(ms: Long): String {
@@ -692,6 +1020,22 @@ private fun AudioDiagnosticsSheet(diagnostics: PlaybackDiagnostics) {
                 "最後のfeedから",
                 diagnostics.media3AudioSink.lastElapsedSinceLastFeedMs?.let { "$it ms" } ?: "Unknown"
             )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        DiagnosticsSection("ReplayGain（診断のみ）") {
+            DiagnosticsRow("状態", diagnostics.replayGain.status.name)
+            DiagnosticsRow(
+                "選択ゲイン",
+                diagnostics.replayGain.selectedGainDb?.let { String.format(java.util.Locale.US, "%.2f dB", it) }
+                    ?: "Unknown"
+            )
+            DiagnosticsRow(
+                "補正後",
+                diagnostics.replayGain.appliedGainDb?.let { String.format(java.util.Locale.US, "%.2f dB", it) }
+                    ?: "Unknown"
+            )
+            DiagnosticsRow("説明", diagnostics.replayGain.message ?: "Unknown")
         }
     }
 }

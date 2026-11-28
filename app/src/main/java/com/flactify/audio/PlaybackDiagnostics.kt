@@ -192,7 +192,8 @@ data class PlaybackDiagnostics(
     val capabilities: DirectPlaybackCapability = DirectPlaybackCapability.unknown("未照会"),
     val actualOutput: ActualOutputInfo = ActualOutputInfo.UNKNOWN,
     val spatial: SpatialPipelineInfo = SpatialPipelineInfo(),
-    val media3AudioSink: Media3AudioSinkInfo = Media3AudioSinkInfo.UNKNOWN
+    val media3AudioSink: Media3AudioSinkInfo = Media3AudioSinkInfo.UNKNOWN,
+    val replayGain: ReplayGainCorrection = ReplayGainCorrection.UNKNOWN
 ) {
     val isEmpty: Boolean
         get() = source == SourceAudioInfo.UNKNOWN &&
@@ -200,7 +201,8 @@ data class PlaybackDiagnostics(
                 route == null &&
                 actualOutput == ActualOutputInfo.UNKNOWN &&
                 spatial == SpatialPipelineInfo() &&
-                media3AudioSink == Media3AudioSinkInfo.UNKNOWN
+                media3AudioSink == Media3AudioSinkInfo.UNKNOWN &&
+                replayGain == ReplayGainCorrection.UNKNOWN
 
     /**
      * Compact source description for the player badge, e.g. `FLAC • 96 kHz • 24 bit`.

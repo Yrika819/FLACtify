@@ -4,6 +4,7 @@ import io.mockk.mockk
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
@@ -76,6 +77,32 @@ class ExtractLyricsFromFlacTest {
         assertNull(result)
     }
 
+    @Test
+    fun `extractLyricsFromFlac handles short provider reads`() {
+        val data = createMinimalFlacWithLyrics("[00:00.01]Short reads")
+        val result = invokeExtractLyrics(ShortReadInputStream(data))
+        assertEquals("[00:00.01]Short reads", result)
+    }
+
+    @Test
+    fun `extractLyricsFromFlac rejects an oversized metadata block before reading its body`() {
+        val header = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+            .put("fLaC".toByteArray())
+            // VORBIS_COMMENT with an 8 MiB + 1 declared payload; no payload is supplied.
+            .putInt((4 shl 24) or (8 * 1024 * 1024 + 1))
+            .array()
+        assertNull(invokeExtractLyrics(ByteArrayInputStream(header)))
+    }
+
+    @Test
+    fun `extractLyricsFromFlac rejects a comment length outside the declared block`() {
+        val malformed = createMinimalFlacWithLyrics("ignored").also { bytes ->
+            // fLaC (4), block header (4), vendor length (4), vendor (4), count (4), comment length.
+            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(20, Int.MAX_VALUE)
+        }
+        assertNull(invokeExtractLyrics(ByteArrayInputStream(malformed)))
+    }
+
     private fun invokeExtractLyrics(inputStream: ByteArrayInputStream): String? {
         val extractor = TrackMetadataExtractor(mockk(relaxed = true))
         val method = TrackMetadataExtractor::class.java.getDeclaredMethod(
@@ -84,6 +111,30 @@ class ExtractLyricsFromFlacTest {
         )
         method.isAccessible = true
         return method.invoke(extractor, inputStream) as String?
+    }
+
+    private fun invokeExtractLyrics(inputStream: InputStream): String? {
+        val extractor = TrackMetadataExtractor(mockk(relaxed = true))
+        val method = TrackMetadataExtractor::class.java.getDeclaredMethod(
+            "extractLyricsFromFlac",
+            InputStream::class.java
+        )
+        method.isAccessible = true
+        return method.invoke(extractor, inputStream) as String?
+    }
+
+    private class ShortReadInputStream(private val bytes: ByteArray) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int = if (position == bytes.size) -1 else bytes[position++].toInt() and 0xff
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            if (position == bytes.size) return -1
+            val count = minOf(1, length, bytes.size - position)
+            bytes.copyInto(target, offset, position, position + count)
+            position += count
+            return count
+        }
     }
 
     private fun createMinimalFlacWithLyrics(lyrics: String): ByteArray {

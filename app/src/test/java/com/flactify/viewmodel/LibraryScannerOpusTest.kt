@@ -8,18 +8,37 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 class LibraryScannerOpusTest {
     private val uriCache = ConcurrentHashMap<String, Uri>()
+
+    @Test
+    fun `metadata copy refuses input beyond its temporary file budget`() {
+        val output = ByteArrayOutputStream()
+        assertThrows(IOException::class.java) {
+            LibraryScanner.copyBoundedMetadata(ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)), output, maxBytes = 3)
+        }
+        assertTrue(output.size() <= 3)
+    }
+
+    @Test
+    fun `oversized documents select seekable descriptor metadata path`() {
+        assertFalse(LibraryScanner.usesSeekableDescriptor(LibraryScanner.MAX_TRACK_METADATA_COPY_BYTES))
+        assertTrue(LibraryScanner.usesSeekableDescriptor(LibraryScanner.MAX_TRACK_METADATA_COPY_BYTES + 1L))
+    }
 
     @Test
     fun `initial scan and incremental scan recognize Opus by content and ignore corrupt mixture`() = runBlocking {
@@ -139,6 +158,202 @@ class LibraryScannerOpusTest {
         }
     }
 
+    @Test
+    fun `unchanged cached format does not reopen SAF provider`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val folderUri = uriFor("cached-format-music")
+        val cachedUri = uriFor("renamed-opus.bin")
+        val root = mockk<DocumentFile>()
+        val document = mockk<DocumentFile>()
+        every { context.contentResolver } returns resolver
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(document)
+        every { document.isDirectory } returns false
+        every { document.name } returns "renamed-opus.bin"
+        every { document.uri } returns cachedUri
+        every { document.lastModified() } returns 200L
+        every { resolver.openInputStream(cachedUri) } throws IOException("must not read unchanged cache")
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+
+        val cached = TrackData(
+            title = "Cached Opus",
+            artist = "Synthetic artist",
+            originalIndex = 0,
+            uri = cachedUri,
+            lastModified = 200L,
+            formatExtension = "opus"
+        )
+        try {
+            val result = LibraryScanner(null).scan(
+                context = context,
+                folderUri = folderUri,
+                cachedTracks = listOf(cached),
+                persistIfCurrent = {}
+            )
+
+            assertTrue(result.scanSucceeded)
+            assertEquals(listOf("Cached Opus"), result.tracks.map { it.title })
+            verify(exactly = 0) { resolver.openInputStream(cachedUri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
+        }
+    }
+
+    @Test
+    fun `same timestamp with changed provider size rescans cached entry`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val tempDir = kotlin.io.path.createTempDirectory("same-mtime-replacement").toFile()
+        val folderUri = uriFor("same-mtime-music")
+        val replacementBytes = File("src/test/resources/audio/opus_untagged.opus").readBytes()
+        every { context.contentResolver } returns resolver
+        every { context.cacheDir } returns tempDir
+        val root = mockk<DocumentFile>()
+        val replacement = document("replacement.opus", replacementBytes, 100L, resolver)
+        val replacementUri = uriFor("replacement.opus")
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(replacement)
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+
+        val cached = TrackData(
+            title = "Stale cached title",
+            artist = "Synthetic artist",
+            originalIndex = 0,
+            uri = replacementUri,
+            lastModified = 100L,
+            formatExtension = "opus",
+            fileSize = replacementBytes.size.toLong() - 1L
+        )
+        try {
+            val result = LibraryScanner(null).scan(
+                context = context,
+                folderUri = folderUri,
+                cachedTracks = listOf(cached),
+                persistIfCurrent = {}
+            )
+
+            assertTrue(result.scanSucceeded)
+            assertTrue(result.changed)
+            assertEquals(1, result.tracks.size)
+            assertFalse(result.tracks.single().title == "Stale cached title")
+            verify(exactly = 2) { resolver.openInputStream(replacementUri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `full rescan ignores a valid cache entry for the same timestamp and size`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val tempDir = kotlin.io.path.createTempDirectory("full-rescan").toFile()
+        val folderUri = uriFor("full-rescan-music")
+        val bytes = File("src/test/resources/audio/opus_untagged.opus").readBytes()
+        every { context.contentResolver } returns resolver
+        every { context.cacheDir } returns tempDir
+        val root = mockk<DocumentFile>()
+        val trackFile = document("rescan.opus", bytes, 100L, resolver)
+        val trackUri = uriFor("rescan.opus")
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(trackFile)
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+        try {
+            val scanner = LibraryScanner(null)
+            val initial = scanner.scan(context, folderUri, cachedTracks = emptyList(), persistIfCurrent = {})
+            assertTrue(initial.scanSucceeded)
+            verify(exactly = 2) { resolver.openInputStream(trackUri) }
+
+            val refreshed = scanner.fullRescan(context, folderUri, persistIfCurrent = {})
+            assertTrue(refreshed.scanSucceeded)
+            assertEquals(listOf(trackUri), refreshed.tracks.map { it.uri })
+            verify(exactly = 4) { resolver.openInputStream(trackUri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `legacy cache without size or format hint remains readable`() = runBlocking {
+        val context = mockk<Context>(relaxed = true)
+        val resolver = mockk<ContentResolver>(relaxed = true)
+        val folderUri = uriFor("legacy-cache-music")
+        val bytes = File("src/test/resources/audio/opus_untagged.opus").readBytes()
+        val root = mockk<DocumentFile>()
+        val document = document("legacy.opus", bytes, 100L, resolver)
+        val documentUri = uriFor("legacy.opus")
+        every { context.contentResolver } returns resolver
+        every { root.exists() } returns true
+        every { root.isDirectory } returns true
+        every { root.listFiles() } returns arrayOf(document)
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, folderUri) } returns root
+
+        val cached = TrackData(
+            title = "Legacy cached title",
+            artist = "Synthetic artist",
+            originalIndex = 0,
+            uri = documentUri,
+            lastModified = 100L
+        )
+        try {
+            val result = LibraryScanner(null).scan(
+                context = context,
+                folderUri = folderUri,
+                cachedTracks = listOf(cached),
+                persistIfCurrent = {}
+            )
+
+            assertTrue(result.scanSucceeded)
+            assertEquals("Legacy cached title", result.tracks.single().title)
+            assertEquals("opus", result.tracks.single().formatExtension)
+            assertEquals(bytes.size.toLong(), result.tracks.single().fileSize)
+            verify(exactly = 1) { resolver.openInputStream(documentUri) }
+        } finally {
+            unmockkStatic(DocumentFile::class)
+        }
+    }
+
+    @Test
+    fun `legacy cache json without provider fields still loads`() {
+        val context = mockk<Context>(relaxed = true)
+        val tempDir = kotlin.io.path.createTempDirectory("legacy-cache-json").toFile()
+        every { context.cacheDir } returns tempDir
+        every { context.filesDir } returns tempDir
+        val cacheDir = File(tempDir, "flactify-library").apply { mkdirs() }
+        val folderUri = uriFor("legacy-json-folder")
+        val trackUri = uriFor("legacy-json-track")
+        mockkStatic(Uri::class)
+        every { Uri.parse("content://synthetic-library/folder") } returns folderUri
+        every { Uri.parse("content://synthetic-library/song.opus") } returns trackUri
+        File(cacheDir, LibraryScanner.CACHE_FILE_NAME).writeText(
+            """
+            {"version":1,"folderUri":"content://synthetic-library/folder","data":[
+              {"t":"Old","ar":"Artist","al":"Album","u":"content://synthetic-library/song.opus","lm":100}
+            ]}
+            """.trimIndent()
+        )
+
+        try {
+            val snapshot = LibraryScanner(null).loadCacheSnapshot(context)
+            assertTrue(snapshot != null)
+            val track = snapshot!!.tracks.single()
+            assertNull(track.formatExtension)
+            assertEquals(-1L, track.fileSize)
+        } finally {
+            unmockkStatic(Uri::class)
+            tempDir.deleteRecursively()
+        }
+    }
+
     private fun document(
         name: String,
         bytes: ByteArray,
@@ -151,6 +366,7 @@ class LibraryScannerOpusTest {
         every { file.name } returns name
         every { file.uri } returns uri
         every { file.lastModified() } returns modified
+        every { file.length() } returns bytes.size.toLong()
         every { resolver.openInputStream(uri) } answers { ByteArrayInputStream(bytes) }
         return file
     }

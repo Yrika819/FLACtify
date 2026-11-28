@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.io.InputStream
 
 /**
@@ -256,6 +257,47 @@ class FlacStreamInfoParsingTest {
         assertNotNull(parsed)
         assertEquals(24, parsed!!.bitDepth)
         assertEquals(96_000, parsed.sampleRateHz)
+    }
+
+    @Test
+    fun `stream info parser never asks a provider to read past its fixed header`() {
+        val bytes = flacStream(44_100, 2, 16)
+        val input = MaxReadInputStream(bytes, maxRead = 34)
+        val parsed = parse(input)
+
+        assertEquals(Parsed(44_100, 2, 16), parsed)
+        // 34 is the STREAMINFO payload; the parser requests 4-byte signature/header reads and
+        // this payload, but never lets a buffered wrapper read into frames or later metadata.
+        assertEquals(34, input.largestRequestedRead)
+    }
+
+    private fun parse(input: InputStream): Parsed? {
+        val method = AudioSourceReader::class.java
+            .getDeclaredMethod("readFlacStreamInfoOrNull", InputStream::class.java)
+        method.isAccessible = true
+        val result = method.invoke(reader, input) ?: return null
+        val type = result.javaClass
+        fun field(name: String): Int =
+            type.getDeclaredField(name).apply { isAccessible = true }.getInt(result)
+        return Parsed(field("sampleRateHz"), field("channelCount"), field("bitDepth"))
+    }
+
+    private class MaxReadInputStream(private val bytes: ByteArray, private val maxRead: Int) : InputStream() {
+        private var position = 0
+        var largestRequestedRead: Int = 0
+            private set
+
+        override fun read(): Int = if (position == bytes.size) -1 else bytes[position++].toInt() and 0xff
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            largestRequestedRead = maxOf(largestRequestedRead, length)
+            if (length > maxRead) throw IOException("read-ahead: $length")
+            if (position == bytes.size) return -1
+            val count = minOf(length, bytes.size - position)
+            bytes.copyInto(target, offset, position, position + count)
+            position += count
+            return count
+        }
     }
 
     private fun realFlac(resourcePath: String): ByteArray =

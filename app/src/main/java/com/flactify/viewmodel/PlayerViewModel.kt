@@ -25,6 +25,11 @@ import com.flactify.audio.DirectPlaybackProbe
 import com.flactify.audio.PlaybackDiagnostics
 import com.flactify.audio.PlaybackDiagnosticsBus
 import com.flactify.audio.SourceAudioInfo
+import com.flactify.audio.ReplayGainCalculator
+import com.flactify.audio.ReplayGainCorrection
+import com.flactify.audio.ReplayGainPreferences
+import com.flactify.audio.ReplayGainSelection
+import com.flactify.audio.ReplayGainTags
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -79,7 +84,17 @@ data class TrackData(
     val originalIndex: Int,
     val uri: Uri,
     val albumArtBytes: ByteArray? = null,
-    val lastModified: Long = 0L
+    val lastModified: Long = 0L,
+    /**
+     * Content-detected container used to restore Media3's MIME hint without reopening an
+     * unchanged SAF document. This is a cache hint rather than user-facing track metadata, so it
+     * intentionally does not participate in value equality.
+     */
+    val formatExtension: String? = null,
+    /** Provider-reported byte length, or -1 when the provider did not expose one. */
+    val fileSize: Long = -1L,
+    /** Parsed loudness tags retained with the library snapshot; never applied to source audio. */
+    val replayGainTags: ReplayGainTags = ReplayGainTags.UNKNOWN
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -98,7 +113,8 @@ data class TrackData(
             originalIndex == other.originalIndex &&
             uri == other.uri &&
             java.util.Arrays.equals(albumArtBytes, other.albumArtBytes) &&
-            lastModified == other.lastModified
+            lastModified == other.lastModified &&
+            replayGainTags == other.replayGainTags
     }
 
     override fun hashCode(): Int {
@@ -116,6 +132,7 @@ data class TrackData(
         result = 31 * result + uri.hashCode()
         result = 31 * result + java.util.Arrays.hashCode(albumArtBytes)
         result = 31 * result + lastModified.hashCode()
+        result = 31 * result + replayGainTags.hashCode()
         return result
     }
 }
@@ -216,6 +233,12 @@ class PlayerViewModel : ViewModel() {
     )
     val pauseOnBluetoothDisconnect: StateFlow<Boolean> = _pauseOnBluetoothDisconnect
 
+    private val _replayGainPreferences = MutableStateFlow(ReplayGainPreferences())
+    val replayGainPreferences: StateFlow<ReplayGainPreferences> = _replayGainPreferences
+
+    private val _replayGainCorrection = MutableStateFlow(ReplayGainCorrection.UNKNOWN)
+    val replayGainCorrection: StateFlow<ReplayGainCorrection> = _replayGainCorrection
+
     private val _currentTrackName = MutableStateFlow("未再生")
     val currentTrackName: StateFlow<String> = _currentTrackName
 
@@ -233,6 +256,14 @@ class PlayerViewModel : ViewModel() {
 
     private val _trackList = MutableStateFlow<List<String>>(emptyList())
     val trackList: StateFlow<List<String>> = _trackList
+
+    /** Changes after a successful full scan so player-side document caches refresh without rescanning. */
+    private val _libraryRefreshGeneration = MutableStateFlow(0L)
+    val libraryRefreshGeneration: StateFlow<Long> = _libraryRefreshGeneration
+
+    /** Projection of the service-owned Media3 queue for queue surfaces; never used as playback state. */
+    private val _playbackQueue = MutableStateFlow(PlaybackQueueSnapshot())
+    val playbackQueue: StateFlow<PlaybackQueueSnapshot> = _playbackQueue
 
     private val _artistMap = MutableStateFlow<Map<String, List<TrackData>>>(emptyMap())
     val artistMap: StateFlow<Map<String, List<TrackData>>> = _artistMap
@@ -256,6 +287,12 @@ class PlayerViewModel : ViewModel() {
     // when an older/read-only grant is restored after process death.
     private val _canEditMetadata = MutableStateFlow(false)
     val canEditMetadata: StateFlow<Boolean> = _canEditMetadata
+    private val _tagEditFailureCategory = MutableStateFlow<TagEditFailureCategory?>(null)
+    val tagEditFailureCategory: StateFlow<TagEditFailureCategory?> = _tagEditFailureCategory
+
+    fun clearTagEditFailure() {
+        _tagEditFailureCategory.value = null
+    }
 
     private val _currentPosition = MutableStateFlow(0L)
     val currentPosition: StateFlow<Long> = _currentPosition
@@ -373,6 +410,7 @@ class PlayerViewModel : ViewModel() {
             PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_KEY,
             PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
         ) ?: PlaybackSettings.PAUSE_ON_BLUETOOTH_DISCONNECT_DEFAULT
+        sharedPreferences?.let { _replayGainPreferences.value = PlaybackSettings.readReplayGainPreferences(it) }
         _spatialAudioMode.value = SpatialAudioMode.fromWireValue(
             sharedPreferences?.getString(SpatialAudioMode.PREFERENCE_KEY, null)
         )
@@ -482,9 +520,15 @@ class PlayerViewModel : ViewModel() {
             },
             onSessionConnectionChanged = { connection, generation ->
                 updateSessionConnection(connection, generation)
+                if (connection != SessionConnectionState.CONNECTED) {
+                    _playbackQueue.value = PlaybackQueueSnapshot()
+                }
             },
             onAuthoritativeSnapshot = { mediaController, generation ->
                 resynchronizeNowPlayingState(mediaController, generation, appContext)
+            },
+            onQueueChanged = { snapshot ->
+                _playbackQueue.value = snapshot
             }
         )
         playbackController?.initialize(
@@ -712,6 +756,7 @@ class PlayerViewModel : ViewModel() {
         _audioInfo.value = ""
         _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
+        _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
         detailsUri = null
         detailsSettled = false
     }
@@ -729,6 +774,7 @@ class PlayerViewModel : ViewModel() {
             _audioInfo.value = ""
             _bluetoothCodecInfo.value = ""
             _diagnostics.value = PlaybackDiagnostics()
+            _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
             detailsUri = null
             detailsSettled = false
             return
@@ -752,6 +798,7 @@ class PlayerViewModel : ViewModel() {
         _audioInfo.value = ""
         _bluetoothCodecInfo.value = ""
         _diagnostics.value = PlaybackDiagnostics()
+        _replayGainCorrection.value = ReplayGainCorrection.UNKNOWN
 
         val artworkIdentity = _nowPlayingUiState.value.current?.identity
         val artworkTransitionGeneration = _nowPlayingUiState.value.transitionGeneration
@@ -890,6 +937,15 @@ class PlayerViewModel : ViewModel() {
             // 48 kHz stereo and reporting "Direct supported" for a format nobody played.
             val capability = probe?.probe(source.sampleRateHz, source.channelCount)
                 ?: com.flactify.audio.DirectPlaybackCapability.unknown("probe を初期化できていません")
+            val replayGainTags = currentCacheSnapshot?.tracks
+                ?.firstOrNull { it.uri == uri }
+                ?.replayGainTags
+                ?: ReplayGainTags.UNKNOWN
+            val replayGain = ReplayGainCalculator.calculate(
+                replayGainTags,
+                _replayGainPreferences.value,
+                ReplayGainTagReader.supportsExtension(extension)
+            )
             withContext(Dispatchers.Main) {
                 if (detailsUri != uri || detailsGeneration != requestGeneration ||
                     _nowPlayingUiState.value.current?.identity != trackIdentity ||
@@ -898,9 +954,49 @@ class PlayerViewModel : ViewModel() {
                 _diagnostics.value = _diagnostics.value.copy(
                     source = source,
                     route = route,
-                    capabilities = capability
+                    capabilities = capability,
+                    replayGain = replayGain
                 )
+                _replayGainCorrection.value = replayGain
             }
+        }
+    }
+
+    fun setReplayGainEnabled(enabled: Boolean) = updateReplayGainPreferences {
+        copy(enabled = enabled)
+    }
+
+    fun setReplayGainSelection(selection: ReplayGainSelection) = updateReplayGainPreferences {
+        copy(selection = selection)
+    }
+
+    fun setReplayGainPreampDb(preampDb: Double) = updateReplayGainPreferences {
+        copy(preampDb = preampDb.coerceIn(-12.0, 12.0))
+    }
+
+    fun setReplayGainPreventClipping(prevent: Boolean) = updateReplayGainPreferences {
+        copy(preventClipping = prevent)
+    }
+
+    private fun updateReplayGainPreferences(update: ReplayGainPreferences.() -> ReplayGainPreferences) {
+        val next = _replayGainPreferences.value.update()
+        _replayGainPreferences.value = next
+        sharedPreferences?.edit()
+            ?.putBoolean(PlaybackSettings.REPLAY_GAIN_ENABLED_KEY, next.enabled)
+            ?.putString(PlaybackSettings.REPLAY_GAIN_SELECTION_KEY, next.selection.name)
+            ?.putFloat(PlaybackSettings.REPLAY_GAIN_PREAMP_DB_KEY, next.preampDb.toFloat())
+            ?.putBoolean(PlaybackSettings.REPLAY_GAIN_PREVENT_CLIPPING_KEY, next.preventClipping)
+            ?.apply()
+        val uri = detailsUri
+        if (uri != null) {
+            val tags = currentCacheSnapshot?.tracks?.firstOrNull { it.uri == uri }?.replayGainTags
+                ?: ReplayGainTags.UNKNOWN
+            _replayGainCorrection.value = ReplayGainCalculator.calculate(
+                tags,
+                next,
+                ReplayGainTagReader.supportsExtension(metadataExtractor?.fileExtensionCache?.get(uri))
+            )
+            _diagnostics.value = _diagnostics.value.copy(replayGain = _replayGainCorrection.value)
         }
     }
 
@@ -983,6 +1079,61 @@ class PlayerViewModel : ViewModel() {
         }
     }
 
+    /** Forces metadata and format validation for every document in the currently selected tree. */
+    fun fullRescanCurrentLibrary(context: Context) {
+        val uri = sharedPreferences?.getString("last_uri", null)?.let(Uri::parse) ?: return
+        validateJob?.cancel()
+        validateJob = null
+        scanJob?.cancel()
+        val generation = nextLibraryGeneration()
+        scanJob = viewModelScope.launch {
+            if (!beginScanForGeneration(generation)) return@launch
+            try {
+                val appContext = context.applicationContext
+                val result = scanner().fullRescan(
+                    appContext,
+                    uri,
+                    onProgress = { progress ->
+                        synchronized(libraryCommitLock) {
+                            if (libraryGeneration.get() == generation) applyScanProgress(progress)
+                        }
+                    },
+                    shouldPersist = { isCurrentLibraryGeneration(generation) },
+                    persistIfCurrent = { tracksToSave ->
+                        saveCacheIfCurrent(appContext, uri, generation, tracksToSave)
+                    }
+                )
+                if (libraryGeneration.get() != generation) return@launch
+                if (!result.scanSucceeded) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            _scanFailures.value = result.failedFiles.ifEmpty {
+                                listOfNotNull(result.failure?.message ?: "フォルダを読み取れませんでした")
+                            }
+                        }
+                    }
+                    return@launch
+                }
+                val tracks = result.tracks
+                val groups = withContext(Dispatchers.Default) { LibraryGrouping.group(tracks) }
+                withContext(Dispatchers.Main) {
+                    synchronized(libraryCommitLock) {
+                        if (libraryGeneration.get() == generation) {
+                            publishLibraryGroups(groups)
+                            currentCacheSnapshot = LibraryCacheSnapshot(uri, tracks)
+                            _preloadedCache.complete(currentCacheSnapshot)
+                            _scanFailures.value = result.failedFiles
+                            _isReady.value = true
+                            _libraryRefreshGeneration.value += 1L
+                        }
+                    }
+                }
+            } finally {
+                endScanIndicator()
+            }
+        }
+    }
+
     /**
      * The folder-switch body, extracted so it can be driven deterministically from tests without a
      * leaked [viewModelScope] coroutine (which leaves an active SupervisorJob that [runTest] waits
@@ -1050,6 +1201,7 @@ class PlayerViewModel : ViewModel() {
                         _scanFailures.value = result.failedFiles
                         _isReady.value = true
                         _startupState.value = StartupState.Ready
+                        _libraryRefreshGeneration.value += 1L
                     }
                 }
             }
@@ -1167,6 +1319,7 @@ class PlayerViewModel : ViewModel() {
                         _scanFailures.value = result.failedFiles
                         _isReady.value = true
                         _startupState.value = StartupState.Ready
+                        _libraryRefreshGeneration.value += 1L
                     }
                 }
             }
@@ -1226,17 +1379,22 @@ class PlayerViewModel : ViewModel() {
     }
 
     private fun persistFolderPermission(context: Context, uri: Uri): Boolean {
-        return try {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            hasPersistedWritePermission(context, uri)
-        } catch (_: SecurityException) {
-            hasPersistedWritePermission(context, uri)
-        } catch (_: UnsupportedOperationException) {
-            false
+        val resolver = context.contentResolver
+        // Read is the minimum required grant for a usable library. Request it independently so a
+        // provider that offers read-only access cannot accidentally lose the grant when a combined
+        // read+write persistence request is rejected. Editing is enabled separately only when the
+        // provider actually retained a write grant.
+        if (!hasPersistedReadPermission(context, uri)) {
+            runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
+        if (!hasPersistedWritePermission(context, uri)) {
+            runCatching {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+        }
+        return hasPersistedReadPermission(context, uri)
     }
 
     private fun hasPersistedWritePermission(context: Context, uri: Uri): Boolean {
@@ -1442,19 +1600,57 @@ class PlayerViewModel : ViewModel() {
     }
 
     fun next() {
-        playbackController?.currentUri()?.toString()?.let {
-            userLibraryController?.recordSkip(it)
-            notifyStatsChanged()
+        val controller = playbackController
+        if (controller?.hasNextMediaItem() == true) {
+            controller.currentUri()?.toString()?.let {
+                userLibraryController?.recordSkip(it)
+                notifyStatsChanged()
+            }
         }
-        playbackController?.seekToNext()
+        controller?.seekToNext()
+    }
+
+    fun enqueueNext(track: TrackData): QueueActionResult =
+        playbackController?.enqueueNext(
+            track,
+            fileExtension = { metadataExtractor?.fileExtensionCache[it] ?: "flac" },
+            mimeType = ::getMimeTypeForExtension
+        ) ?: QueueActionResult.NO_CONTROLLER
+
+    fun enqueueAtEnd(track: TrackData): QueueActionResult =
+        playbackController?.enqueueAtEnd(
+            track,
+            fileExtension = { metadataExtractor?.fileExtensionCache[it] ?: "flac" },
+            mimeType = ::getMimeTypeForExtension
+        ) ?: QueueActionResult.NO_CONTROLLER
+
+    fun removeQueueItem(index: Int): QueueActionResult =
+        playbackController?.removeQueueItem(index) ?: QueueActionResult.NO_CONTROLLER
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int): QueueActionResult =
+        playbackController?.moveQueueItem(fromIndex, toIndex) ?: QueueActionResult.NO_CONTROLLER
+
+    /** Saves the current MediaController queue, not a separately cached UI list, as a playlist. */
+    fun savePlaybackQueueAsPlaylist(name: String): Boolean {
+        val normalizedName = name.trim()
+        val uris = playbackController?.queueMediaIds().orEmpty()
+        if (normalizedName.isEmpty() || uris.isEmpty()) return false
+        userLibraryController?.savePlaylist(
+            Playlist(name = normalizedName, trackUris = uris)
+        ) ?: return false
+        refreshPlaylists()
+        return true
     }
 
     fun previous() {
-        playbackController?.currentUri()?.toString()?.let {
-            userLibraryController?.recordSkip(it)
-            notifyStatsChanged()
+        val controller = playbackController
+        if (controller?.hasPreviousMediaItem() == true) {
+            controller.currentUri()?.toString()?.let {
+                userLibraryController?.recordSkip(it)
+                notifyStatsChanged()
+            }
         }
-        playbackController?.seekToPrevious()
+        controller?.seekToPrevious()
     }
 
     fun toggleShuffle() {
@@ -1501,6 +1697,24 @@ class PlayerViewModel : ViewModel() {
         }
     }
 
+    suspend fun tagEditAvailability(context: Context, trackUri: Uri): TagEditFailureCategory? {
+        if (!_canEditMetadata.value) return TagEditFailureCategory.WRITE_ACCESS
+        return withContext(Dispatchers.IO) {
+            try {
+                val input = context.contentResolver.openInputStream(trackUri)
+                    ?: return@withContext TagEditFailureCategory.READ_ACCESS
+                val format = input.use(AudioContainerDetector::sniff)
+                    ?: return@withContext TagEditFailureCategory.UNSUPPORTED_FORMAT
+                if (tagEditor?.supportsFormat(format) == true) null
+                else TagEditFailureCategory.UNSUPPORTED_FORMAT
+            } catch (_: SecurityException) {
+                TagEditFailureCategory.READ_ACCESS
+            } catch (_: Exception) {
+                TagEditFailureCategory.READ_ACCESS
+            }
+        }
+    }
+
     /** Extracted tag-edit body so it can be driven directly by tests without a viewModelScope leak. */
     internal suspend fun performUpdateTrackTags(
         appContext: Context,
@@ -1520,6 +1734,7 @@ class PlayerViewModel : ViewModel() {
         libraryGenerationAtEditStart: Long = libraryGeneration.get()
     ) {
         _isSavingMetadata.value = true
+        _tagEditFailureCategory.value = null
         try {
             val fileExt = metadataExtractor?.fileExtensionCache[trackUri]
                 ?: trackUri.lastPathSegment?.substringAfterLast(".", "tmp")
@@ -1550,6 +1765,9 @@ class PlayerViewModel : ViewModel() {
                     genre, year, composer, albumArtist, discNumber, comment,
                     artBytes, libraryGenerationAtEditStart
                 )
+            } else {
+                _tagEditFailureCategory.value = (result?.exceptionOrNull() as? TagEditFailure)?.category
+                    ?: TagEditFailureCategory.SAVE_FAILED
             }
             onComplete(success)
         } finally {
@@ -1659,6 +1877,18 @@ class PlayerViewModel : ViewModel() {
         refreshPlaylists()
     }
 
+    fun createSmartPlaylist(name: String, query: SmartPlaylistQuery, existingId: String? = null) {
+        userLibraryController?.savePlaylist(
+            Playlist(id = existingId ?: java.util.UUID.randomUUID().toString(), name = name, smartQuery = query)
+        )
+        refreshPlaylists()
+    }
+
+    fun savePlaylist(playlist: Playlist) {
+        userLibraryController?.savePlaylist(playlist)
+        refreshPlaylists()
+    }
+
     fun deletePlaylist(id: String) {
         userLibraryController?.deletePlaylist(id)
         refreshPlaylists()
@@ -1671,6 +1901,35 @@ class PlayerViewModel : ViewModel() {
 
     fun getPlaylistTracks(playlistId: String, allTracks: List<TrackData>): List<TrackData> {
         return userLibraryController?.getPlaylistTracks(playlistId, allTracks) ?: emptyList()
+    }
+
+    fun createLibraryBackup(): String = userLibraryController?.createBackup().orEmpty()
+
+    fun pendingLibraryBackupPreview(): LibraryBackupPreview? =
+        userLibraryController?.pendingRestorePreview()
+
+    fun retryPendingLibraryBackupRestore(): Boolean {
+        val restored = userLibraryController?.retryPendingRestore() ?: false
+        if (restored) refreshRestoredLibraryState()
+        return restored
+    }
+
+    fun discardPendingLibraryBackupRestore() {
+        userLibraryController?.discardPendingRestore()
+    }
+
+    fun restoreLibraryBackup(json: String, merge: Boolean = false): Boolean {
+        val restored = if (merge) userLibraryController?.mergeBackup(json) else userLibraryController?.restoreBackup(json)
+        if (restored == true) {
+            refreshRestoredLibraryState()
+        }
+        return restored == true
+    }
+
+    private fun refreshRestoredLibraryState() {
+        _favorites.value = userLibraryController?.getFavorites() ?: emptySet()
+        refreshPlaylists()
+        _statsVersion.value = _statsVersion.value + 1
     }
 
     fun setSpatialAudioMode(mode: SpatialAudioMode) {

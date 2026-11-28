@@ -33,6 +33,22 @@ class LibraryScannerOwnershipTest {
     }
 
     @Test
+    fun `same timestamp with changed known size requires rescan`() {
+        assertFalse(LibraryScanner.isCacheEntryFresh(123L, 123L, 100L, 101L))
+    }
+
+    @Test
+    fun `untrustworthy timestamps require reopen even with equal known size`() {
+        assertFalse(LibraryScanner.isCacheEntryFresh(0L, 0L, 100L, 100L))
+        assertFalse(LibraryScanner.isCacheEntryFresh(123L, 0L, 100L, 100L))
+    }
+
+    @Test
+    fun `untrustworthy timestamps without size require rescan`() {
+        assertFalse(LibraryScanner.isCacheEntryFresh(0L, 0L, -1L, -1L))
+    }
+
+    @Test
     fun `cache ownership requires exact folder URI`() {
         val folder = "content://provider/tree/primary%3AMusic"
         assertTrue(LibraryScanner.ownsFolderUri(folder, folder))

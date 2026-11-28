@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -30,7 +31,10 @@ class PlayerViewModelDirectorySwitchTest {
     // work launched on viewModelScope (Dispatchers.Main) then runs eagerly and deterministically,
     // instead of being left as an active job that runTest waits on and reports as a spurious
     // "test coroutine is not completing" failure.
-    private val dispatcher = UnconfinedTestDispatcher()
+    // Use an explicit scheduler: the no-argument factory probes Dispatchers.Main before
+    // setUp(), which is unavailable in this plain JVM test environment and can leak an
+    // uncaught exception into a later runTest class.
+    private val dispatcher = UnconfinedTestDispatcher(TestCoroutineScheduler())
 
     @Before
     fun setUp() {

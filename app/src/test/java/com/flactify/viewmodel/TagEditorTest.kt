@@ -11,8 +11,11 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -29,6 +32,17 @@ class TagEditorTest {
     @After
     fun tearDown() {
         tempCacheDir.deleteRecursively()
+    }
+
+    @Test
+    fun `tag edit copy rejects a stream that exceeds its configured byte limit`() = runTest {
+        val destination = ByteArrayOutputStream()
+        val error = runCatching {
+            copyBounded(ByteArrayInputStream(ByteArray(33) { it.toByte() }), destination, maxBytes = 32)
+        }.exceptionOrNull()
+
+        assertTrue(error is IOException)
+        assertEquals(0, destination.size())
     }
 
     @Test
@@ -64,7 +78,92 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement succeeds only after exact content can be read back`() {
+    fun `unknown source is rejected before recovery or output begins`() = runTest {
+        val context = mockk<Context>()
+        val resolver = mockk<ContentResolver>()
+        val uri = mockk<Uri>()
+        every { context.cacheDir } returns tempCacheDir
+        every { context.contentResolver } returns resolver
+        every { resolver.openInputStream(uri) } answers { ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)) }
+
+        val result = TagEditor().updateTrackTags(
+            context,
+            uri,
+            TagEditRequest("曲", "演者", "盤", "", null, null, null, null, null, null, null),
+            "opus"
+        )
+
+        assertFalse(result.isSuccess)
+        assertEquals(TagEditFailureCategory.UNSUPPORTED_FORMAT, (result.exceptionOrNull() as TagEditFailure).category)
+        assertTrue(File(tempCacheDir, "flactify-work").listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `Opus edit through SAF writes Japanese tags and reads them back`() = runTest {
+        val original = File("src/test/resources/audio/opus_tagged.opus").readBytes()
+        var destination = original
+        val (context, resolver, uri) = fakeSafContext { destination }
+        every { resolver.openOutputStream(uri, "rwt") } answers {
+            persistingOutput { destination = it }
+        }
+
+        val result = TagEditor(recoveryMetadataWriter = { _, _, _, _, _ -> }).updateTrackTags(
+            context = context,
+            trackUri = uri,
+            request = opusEditRequest(),
+            fileExtension = "m4a"
+        )
+
+        assertTrue("renamed Opus source should save through SAF: ${result.exceptionOrNull()}", result.isSuccess)
+        val tags = OpusTags.read(destination.inputStream())
+        assertEquals("日本語の曲名", tags["TITLE"])
+        assertEquals("日本語の演者", tags["ARTIST"])
+        assertEquals("[00:00.00]Synthetic Opus lyric", tags["LYRICS"])
+    }
+
+    @Test
+    fun `Opus SAF partial write restores the complete original and retains recovery copy`() = runTest {
+        val original = File("src/test/resources/audio/opus_tagged.opus").readBytes()
+        var destination = original
+        val (context, resolver, uri) = fakeSafContext { destination }
+        var outputAttempts = 0
+        every { resolver.openOutputStream(uri, "rwt") } answers {
+            outputAttempts++
+            if (outputAttempts == 1) {
+                object : OutputStream() {
+                    private val partial = ByteArrayOutputStream()
+                    override fun write(value: Int) { partial.write(value) }
+                    override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                        partial.write(buffer, offset, minOf(length, 48))
+                        destination = partial.toByteArray()
+                        throw IOException("synthetic provider interruption")
+                    }
+                    override fun close() { destination = partial.toByteArray() }
+                }
+            } else {
+                persistingOutput { destination = it }
+            }
+        }
+
+        val result = TagEditor(recoveryMetadataWriter = { _, _, _, _, _ -> }).updateTrackTags(
+            context = context,
+            trackUri = uri,
+            request = opusEditRequest(),
+            fileExtension = "opus"
+        )
+
+        assertFalse(result.isSuccess)
+        assertEquals(TagEditFailureCategory.VERIFY_RESTORED, (result.exceptionOrNull() as TagEditFailure).category)
+        assertEquals(2, outputAttempts)
+        assertTrue("the SAF document is restored byte-for-byte", original.contentEquals(destination))
+        assertTrue(
+            "verified recovery copy is retained for audit/recovery",
+            TagRecoveryManager.recoveryDirectory(context).listFiles().orEmpty().any { it.extension == "opus" }
+        )
+    }
+
+    @Test
+    fun `SAF replacement succeeds only after exact content can be read back`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(4, 5, 6, 7)) }
         val destination = ByteArrayOutputStream()
@@ -80,7 +179,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement fails if destination cannot be opened`() {
+    fun `SAF replacement fails if destination cannot be opened`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(2)) }
 
@@ -93,7 +192,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement propagates a destination failure during write`() {
+    fun `SAF replacement propagates a destination failure during write`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1, 1, 1, 1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(ByteArray(16) { 2 }) }
         val destination = ByteArrayOutputStream()
@@ -120,7 +219,52 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF destination is not opened when recovery copy cannot be created`() {
+    fun `cancellation during SAF replacement restores and verifies the original`() = runTest {
+        val originalBytes = byteArrayOf(8, 7, 6, 5)
+        val original = File(tempCacheDir, "original.flac").apply { writeBytes(originalBytes) }
+        val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(ByteArray(128) { 2 }) }
+        val recovery = File(tempCacheDir, "recovery.flac")
+        var destination = originalBytes
+        var outputAttempts = 0
+        lateinit var editJob: Job
+
+        editJob = launch {
+            writeSafDocumentAndVerify(
+                original = original,
+                replacement = replacement,
+                recoveryFile = recovery,
+                openOutput = {
+                    val attempt = ++outputAttempts
+                    val buffer = ByteArrayOutputStream()
+                    object : OutputStream() {
+                        override fun write(value: Int) {
+                            buffer.write(value)
+                            if (attempt == 1) editJob.cancel()
+                        }
+
+                        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                            buffer.write(bytes, offset, length)
+                            if (attempt == 1) editJob.cancel()
+                        }
+
+                        override fun close() {
+                            destination = buffer.toByteArray()
+                        }
+                    }
+                },
+                openInput = { ByteArrayInputStream(destination) }
+            )
+        }
+        editJob.join()
+
+        assertTrue(editJob.isCancelled)
+        assertEquals(2, outputAttempts)
+        assertTrue("cancellation must restore the complete original", destination.contentEquals(originalBytes))
+        assertTrue("recovery remains available for an interrupted edit", recovery.readBytes().contentEquals(originalBytes))
+    }
+
+    @Test
+    fun `SAF destination is not opened when recovery copy cannot be created`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(8, 7, 6)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val impossibleRecovery = File(tempCacheDir, "missing-directory/recovery.flac")
@@ -141,7 +285,7 @@ class TagEditorTest {
     }
 
     @Test
-    fun `SAF replacement rejects mismatched readback`() {
+    fun `SAF replacement rejects mismatched readback`() = runTest {
         val original = File(tempCacheDir, "original.flac").apply { writeBytes(byteArrayOf(1)) }
         val replacement = File(tempCacheDir, "replacement.flac").apply { writeBytes(byteArrayOf(2, 3)) }
         val destination = ByteArrayOutputStream()
@@ -155,5 +299,78 @@ class TagEditorTest {
         }.exceptionOrNull()
 
         assertTrue(error is IOException)
+    }
+
+    @Test
+    fun `recovery copy restores a partially replaced document and verifies it`() = runTest {
+        val recovery = File(tempCacheDir, "recovery.flac").apply { writeBytes(byteArrayOf(8, 7, 6, 5, 4)) }
+        var destination = byteArrayOf(1, 2)
+        var writes = 0
+
+        restoreSafDocumentAndVerify(
+            recoveryFile = recovery,
+            openOutput = {
+                writes++
+                object : ByteArrayOutputStream() {
+                    override fun close() {
+                        destination = toByteArray()
+                        super.close()
+                    }
+                }
+            },
+            openInput = { ByteArrayInputStream(destination) }
+        )
+
+        assertTrue(destination.contentEquals(byteArrayOf(8, 7, 6, 5, 4)))
+        assertTrue(writes == 1)
+    }
+
+    @Test
+    fun `tag editor advertises Opus and supported standard containers only`() {
+        val editor = TagEditor()
+
+        assertTrue(editor.supportsFormat("opus"))
+        assertTrue(editor.supportsFormat("ogg"))
+        assertTrue(editor.supportsFormat("flac"))
+        assertTrue(editor.supportsFormat("mp3"))
+        assertTrue(editor.supportsFormat("m4a"))
+        assertTrue(editor.supportsFormat("wav"))
+        assertFalse(editor.supportsFormat("aac"))
+        assertFalse(editor.supportsFormat("unknown"))
+    }
+
+    private fun opusEditRequest() = TagEditRequest(
+        title = "日本語の曲名",
+        artist = "日本語の演者",
+        album = "合成アルバム",
+        trackNumber = "",
+        genre = null,
+        year = null,
+        composer = null,
+        albumArtist = null,
+        discNumber = null,
+        comment = null,
+        artworkBitmap = null
+    )
+
+    private fun fakeSafContext(readTarget: () -> ByteArray): Triple<Context, ContentResolver, Uri> {
+        val context = mockk<Context>()
+        val resolver = mockk<ContentResolver>()
+        val uri = mockk<Uri>()
+        val noBackup = File(tempCacheDir, "no-backup").apply { mkdirs() }
+        val files = File(tempCacheDir, "files").apply { mkdirs() }
+        every { context.cacheDir } returns tempCacheDir
+        every { context.filesDir } returns files
+        every { context.noBackupFilesDir } returns noBackup
+        every { context.contentResolver } returns resolver
+        every { resolver.openInputStream(uri) } answers { ByteArrayInputStream(readTarget()) }
+        return Triple(context, resolver, uri)
+    }
+
+    private fun persistingOutput(save: (ByteArray) -> Unit): OutputStream = object : ByteArrayOutputStream() {
+        override fun close() {
+            save(toByteArray())
+            super.close()
+        }
     }
 }

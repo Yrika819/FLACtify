@@ -25,6 +25,32 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** One item in the service-owned Media3 playlist, projected for queue UI. */
+data class PlaybackQueueItem(
+    val mediaId: String,
+    val uri: Uri?,
+    val title: String,
+    val artist: String,
+    val album: String
+)
+
+/** Authoritative queue snapshot read from [MediaController], never maintained independently. */
+data class PlaybackQueueSnapshot(
+    val items: List<PlaybackQueueItem> = emptyList(),
+    val currentIndex: Int = -1,
+    val shuffleEnabled: Boolean = false,
+    val repeatMode: Int = Player.REPEAT_MODE_OFF
+)
+
+enum class QueueActionResult {
+    SUCCESS,
+    NO_CONTROLLER,
+    INVALID_INDEX,
+    CURRENT_ITEM_PROTECTED,
+    SHUFFLE_NEXT_UNAVAILABLE,
+    SHUFFLE_REORDER_UNAVAILABLE
+}
+
 @OptIn(UnstableApi::class)
 class PlaybackController(
     private val scope: CoroutineScope,
@@ -46,7 +72,8 @@ class PlaybackController(
     private val onPlaybackError: () -> Unit = {},
     private val onSeekabilityChanged: (Boolean) -> Unit = {},
     private val onSessionConnectionChanged: (SessionConnectionState, Long) -> Unit = { _, _ -> },
-    private val onAuthoritativeSnapshot: (MediaController, Long) -> Unit = { _, _ -> }
+    private val onAuthoritativeSnapshot: (MediaController, Long) -> Unit = { _, _ -> },
+    private val onQueueChanged: (PlaybackQueueSnapshot) -> Unit = {}
 ) {
     var player: MediaController? = null
         private set
@@ -163,6 +190,7 @@ class PlaybackController(
                 onCurrentMediaItemChanged(mediaItem, true, mediaController.mediaMetadata)
                 handleMediaItemTransition(mediaItem)
                 publishPositionAndDuration(mediaController)
+                publishQueue(mediaController)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -203,6 +231,14 @@ class PlaybackController(
                 onTracksChanged(tracks, currentUri())
             }
 
+            override fun onTimelineChanged(
+                timeline: androidx.media3.common.Timeline,
+                reason: Int
+            ) {
+                if (player !== mediaController) return
+                publishQueue(mediaController)
+            }
+
             override fun onShuffleModeEnabledChanged(enabled: Boolean) {
                 if (player !== mediaController) return
                 onShuffleChanged(enabled)
@@ -231,9 +267,37 @@ class PlaybackController(
             publishPositionAndDuration(mediaController)
             onShuffleChanged(mediaController.shuffleModeEnabled)
             onRepeatChanged(mediaController.repeatMode)
+            publishQueue(mediaController)
             if (mediaController.isPlaying) startProgressUpdates()
         }
     }
+
+    private fun publishQueue(mediaController: MediaController) {
+        onQueueChanged(queueSnapshot(mediaController))
+    }
+
+    private fun queueSnapshot(mediaController: MediaController): PlaybackQueueSnapshot {
+        val items = (0 until mediaController.mediaItemCount).map { index ->
+            val item = mediaController.getMediaItemAt(index)
+            val metadata = item.mediaMetadata
+            PlaybackQueueItem(
+                mediaId = item.mediaId,
+                uri = item.localConfiguration?.uri,
+                title = metadata.title?.toString().orEmpty(),
+                artist = metadata.artist?.toString().orEmpty(),
+                album = metadata.albumTitle?.toString().orEmpty()
+            )
+        }
+        return PlaybackQueueSnapshot(
+            items = items,
+            currentIndex = mediaController.currentMediaItemIndex,
+            shuffleEnabled = mediaController.shuffleModeEnabled,
+            repeatMode = mediaController.repeatMode
+        )
+    }
+
+    /** Returns the queue directly from MediaController, or an empty snapshot if offline. */
+    fun queueSnapshot(): PlaybackQueueSnapshot = player?.let(::queueSnapshot) ?: PlaybackQueueSnapshot()
 
     fun setPlaylist(
         tracks: List<TrackData>,
@@ -337,6 +401,12 @@ class PlaybackController(
             .build()
     }
 
+    private fun buildMediaItem(
+        track: TrackData,
+        fileExtension: (Uri) -> String,
+        mimeType: (String) -> String
+    ): MediaItem = buildMediaItems(listOf(track), fileExtension, mimeType).single()
+
     /**
      * True when the controller already holds exactly [desired] in the same order and with the
      * same identity (URI, MIME type, title, artist, album). Comparing only the number of items is
@@ -379,7 +449,64 @@ class PlaybackController(
         )
     }
 
-    fun playPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun playPause() { player?.let { if (it.playWhenReady) it.pause() else it.play() } }
+
+    fun enqueueNext(
+        track: TrackData,
+        fileExtension: (Uri) -> String,
+        mimeType: (String) -> String
+    ): QueueActionResult {
+        val mediaController = player ?: return QueueActionResult.NO_CONTROLLER
+        if (mediaController.shuffleModeEnabled) return QueueActionResult.SHUFFLE_NEXT_UNAVAILABLE
+        val currentIndex = mediaController.currentMediaItemIndex
+        if (currentIndex !in 0 until mediaController.mediaItemCount) {
+            return QueueActionResult.INVALID_INDEX
+        }
+        mediaController.addMediaItem(
+            currentIndex + 1,
+            buildMediaItem(track, fileExtension, mimeType)
+        )
+        return QueueActionResult.SUCCESS
+    }
+
+    fun enqueueAtEnd(
+        track: TrackData,
+        fileExtension: (Uri) -> String,
+        mimeType: (String) -> String
+    ): QueueActionResult {
+        val mediaController = player ?: return QueueActionResult.NO_CONTROLLER
+        mediaController.addMediaItem(
+            mediaController.mediaItemCount,
+            buildMediaItem(track, fileExtension, mimeType)
+        )
+        return QueueActionResult.SUCCESS
+    }
+
+    /** Removing the current item is blocked so this action cannot discard active playback. */
+    fun removeQueueItem(index: Int): QueueActionResult {
+        val mediaController = player ?: return QueueActionResult.NO_CONTROLLER
+        if (index !in 0 until mediaController.mediaItemCount) return QueueActionResult.INVALID_INDEX
+        if (index == mediaController.currentMediaItemIndex) {
+            return QueueActionResult.CURRENT_ITEM_PROTECTED
+        }
+        mediaController.removeMediaItem(index)
+        return QueueActionResult.SUCCESS
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int): QueueActionResult {
+        val mediaController = player ?: return QueueActionResult.NO_CONTROLLER
+        if (mediaController.shuffleModeEnabled) return QueueActionResult.SHUFFLE_REORDER_UNAVAILABLE
+        if (fromIndex !in 0 until mediaController.mediaItemCount ||
+            toIndex !in 0 until mediaController.mediaItemCount
+        ) {
+            return QueueActionResult.INVALID_INDEX
+        }
+        if (fromIndex == toIndex) return QueueActionResult.SUCCESS
+        mediaController.moveMediaItem(fromIndex, toIndex)
+        return QueueActionResult.SUCCESS
+    }
+
+    fun queueMediaIds(): List<String> = queueSnapshot().items.map { it.uri?.toString() ?: it.mediaId }
     fun seekTo(position: Long) {
         player?.let { mediaController ->
             // Unknown duration is not a zero-length item: only clamp when the duration is known.
@@ -393,6 +520,8 @@ class PlaybackController(
     }
     fun seekToNext() { player?.seekToNext() }
     fun seekToPrevious() { player?.seekToPrevious() }
+    fun hasNextMediaItem(): Boolean = player?.hasNextMediaItem() == true
+    fun hasPreviousMediaItem(): Boolean = player?.hasPreviousMediaItem() == true
     fun setShuffle(enabled: Boolean) {
         // The service starts the round from onShuffleModeEnabledChanged, which also covers
         // notification/Bluetooth/other-controller changes. Sending a command here as well made

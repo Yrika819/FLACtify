@@ -9,6 +9,9 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Base64
 
 class AudioContainerDetectorTest {
     @Test
@@ -62,6 +65,18 @@ class AudioContainerDetectorTest {
     }
 
     @Test
+    fun `only a valid front cover picture is exposed as album artwork`() {
+        val image = byteArrayOf(1, 2, 3)
+        val backCover = OpusTags.createFrontCoverPicture(image, 10, 10).also {
+            ByteBuffer.wrap(it).order(ByteOrder.BIG_ENDIAN).putInt(0, 4)
+        }
+        val frontCover = OpusTags.createFrontCoverPicture(image, 10, 10)
+
+        assertNull(OpusTags.decodePicture(Base64.getEncoder().encodeToString(backCover)))
+        assertArrayEquals(image, OpusTags.decodePicture(Base64.getEncoder().encodeToString(frontCover)))
+    }
+
+    @Test
     fun `malformed Ogg without OpusTags is rejected before reading audio payload`() {
         val malformed = ByteArrayOutputStream().apply {
             write(oggPage("OpusHead".toByteArray() + ByteArray(11), headerType = 2))
@@ -72,6 +87,45 @@ class AudioContainerDetectorTest {
 
         assertEquals(emptyMap<String, String>(), OpusTags.read(input))
         assertTrue("metadata parser must stop before the audio pages", input.bytesRead < malformed.size / 4)
+    }
+
+    @Test
+    fun `valid OpusTags stops before synthetic audio payload`() {
+        val head = oggPage("OpusHead".toByteArray() + ByteArray(11), headerType = 2)
+        val tags = opusTagsPacket("TITLE=Synthetic stream")
+        val tagPage = oggPage(tags, headerType = 0)
+        val audio = ByteArray(128 * 1024) { 0x55 }
+        val input = CountingInputStream(head + tagPage + audio)
+
+        assertEquals("Synthetic stream", OpusTags.read(input)["TITLE"])
+        assertTrue(
+            "valid metadata must stop at packet 2, before audio",
+            input.bytesRead <= head.size + tagPage.size
+        )
+    }
+
+    @Test
+    fun `OpusTags rejects a packet that exceeds the sixteen MiB bound`() {
+        val head = oggPage("OpusHead".toByteArray() + ByteArray(11), headerType = 2)
+        val pageBody = ByteArray(255 * 255)
+        val continuedPage = ByteArrayOutputStream().apply {
+            write("OggS".toByteArray(Charsets.US_ASCII))
+            write(0) // Ogg page version
+            write(1) // continued packet; OpusTags does not complete on any 255-byte lace
+            write(ByteArray(8 + 4 + 4 + 4)) // granule position, serial, sequence, checksum
+            write(255) // number of lacing values
+            repeat(255) { write(255) }
+            write(pageBody)
+        }.toByteArray()
+        // 259 * (255 * 255) is just over 16 MiB. No packet terminator is needed: the bound must
+        // reject while reading the final page, before any synthetic audio can be considered.
+        val input = CountingInputStream(head + ByteArrayOutputStream().let { output ->
+            repeat(259) { output.write(continuedPage) }
+            output.toByteArray()
+        })
+
+        assertEquals(emptyMap<String, String>(), OpusTags.read(input))
+        assertTrue("bound should stop before the complete synthetic packet", input.bytesRead < input.availableBytes)
     }
 
     private fun oggOpusPrefix(): ByteArray = ByteArray(64).also { bytes ->
@@ -95,7 +149,24 @@ class AudioContainerDetectorTest {
         write(packet)
     }.toByteArray()
 
+    private fun opusTagsPacket(comment: String): ByteArray = ByteArrayOutputStream().apply {
+        write("OpusTags".toByteArray(Charsets.US_ASCII))
+        writeLittleEndianInt(0) // empty vendor
+        writeLittleEndianInt(1)
+        val bytes = comment.toByteArray(Charsets.UTF_8)
+        writeLittleEndianInt(bytes.size)
+        write(bytes)
+    }.toByteArray()
+
+    private fun ByteArrayOutputStream.writeLittleEndianInt(value: Int) {
+        write(value and 0xff)
+        write((value ushr 8) and 0xff)
+        write((value ushr 16) and 0xff)
+        write((value ushr 24) and 0xff)
+    }
+
     private class CountingInputStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
+        val availableBytes: Int = bytes.size
         var bytesRead = 0
             private set
 

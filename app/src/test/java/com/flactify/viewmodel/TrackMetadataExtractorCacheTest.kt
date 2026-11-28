@@ -2,6 +2,7 @@ package com.flactify.viewmodel
 
 import android.net.Uri
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
@@ -152,5 +153,18 @@ class TrackMetadataExtractorCacheTest {
 
     private fun bitmapBytes(size: Int): Bitmap = mockk<Bitmap> {
         every { allocationByteCount } returns size
+    }
+
+    @Test
+    fun `artwork dimensions are bounded and sample calculation cannot overflow`() {
+        val safe = BitmapFactory.Options().apply { outWidth = 12_000; outHeight = 8_000 }
+        val tooManyPixels = BitmapFactory.Options().apply { outWidth = 20_000; outHeight = 20_000 }
+        val invalid = BitmapFactory.Options().apply { outWidth = Int.MAX_VALUE; outHeight = 1 }
+
+        assertTrue(safe.hasSafeArtworkDimensions())
+        assertTrue(!tooManyPixels.hasSafeArtworkDimensions())
+        assertTrue(!invalid.hasSafeArtworkDimensions())
+        assertEquals(64, artworkSampleSize(16_384, 1_024, 256))
+        assertTrue(artworkSampleSize(Int.MAX_VALUE, 1, 256) > 0)
     }
 }

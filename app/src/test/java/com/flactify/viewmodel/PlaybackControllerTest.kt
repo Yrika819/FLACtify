@@ -20,6 +20,111 @@ import org.junit.Test
 
 class PlaybackControllerTest {
     @Test
+    fun `playPause pauses when playback is requested during buffering`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.isPlaying } returns false
+        every { player.playWhenReady } returns true
+        val controller = newController(player)
+
+        controller.playPause()
+
+        verify(exactly = 1) { player.pause() }
+        verify(exactly = 0) { player.play() }
+    }
+
+    @Test
+    fun `playPause starts playback when there is no outstanding play request`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.isPlaying } returns false
+        every { player.playWhenReady } returns false
+        val controller = newController(player)
+
+        controller.playPause()
+
+        verify(exactly = 1) { player.play() }
+        verify(exactly = 0) { player.pause() }
+    }
+
+    @Test
+    fun `queue adjacency checks follow Media3 boundary state`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.hasNextMediaItem() } returns false
+        every { player.hasPreviousMediaItem() } returns true
+        val controller = newController(player)
+
+        assertTrue(!controller.hasNextMediaItem())
+        assertTrue(controller.hasPreviousMediaItem())
+    }
+
+    @Test
+    fun `enqueue next inserts after current without replacing playback`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.currentMediaItemIndex } returns 1
+        every { player.mediaItemCount } returns 3
+        val controller = newController(player)
+
+        assertEquals(
+            QueueActionResult.SUCCESS,
+            controller.enqueueNext(track("next", "content://next"), { "flac" }, { "audio/flac" })
+        )
+        verify(exactly = 1) { player.addMediaItem(2, any()) }
+        verify(exactly = 0) { player.setMediaItems(any<List<androidx.media3.common.MediaItem>>(), any(), any()) }
+    }
+
+    @Test
+    fun `enqueue end appends without replacing playback`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.mediaItemCount } returns 3
+        val controller = newController(player)
+
+        assertEquals(
+            QueueActionResult.SUCCESS,
+            controller.enqueueAtEnd(track("last", "content://last"), { "flac" }, { "audio/flac" })
+        )
+        verify(exactly = 1) { player.addMediaItem(3, any()) }
+        verify(exactly = 0) { player.prepare() }
+    }
+
+    @Test
+    fun `shuffle next is rejected instead of guessing at raw queue order`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.shuffleModeEnabled } returns true
+        val controller = newController(player)
+
+        assertEquals(
+            QueueActionResult.SHUFFLE_NEXT_UNAVAILABLE,
+            controller.enqueueNext(track("next", "content://next"), { "flac" }, { "audio/flac" })
+        )
+        verify(exactly = 0) { player.addMediaItem(any<Int>(), any()) }
+    }
+
+    @Test
+    fun `current item cannot be removed but another item can`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.mediaItemCount } returns 3
+        every { player.currentMediaItemIndex } returns 1
+        val controller = newController(player)
+
+        assertEquals(QueueActionResult.CURRENT_ITEM_PROTECTED, controller.removeQueueItem(1))
+        assertEquals(QueueActionResult.SUCCESS, controller.removeQueueItem(2))
+        verify(exactly = 1) { player.removeMediaItem(2) }
+    }
+
+    @Test
+    fun `reorder is disabled while shuffle owns playback order`() {
+        val player = mockk<MediaController>(relaxed = true)
+        every { player.shuffleModeEnabled } returns true
+        every { player.mediaItemCount } returns 3
+        val controller = newController(player)
+
+        assertEquals(
+            QueueActionResult.SHUFFLE_REORDER_UNAVAILABLE,
+            controller.moveQueueItem(0, 1)
+        )
+        verify(exactly = 0) { player.moveMediaItem(any(), any()) }
+    }
+
+    @Test
     fun `callbacks from replaced controller are ignored`() {
         val oldController = mockk<MediaController>(relaxed = true)
         val activeController = mockk<MediaController>(relaxed = true)
