@@ -43,6 +43,7 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
     var preview by remember { mutableStateOf<LibraryBackupPreview?>(null) }
     var pendingRestorePreview by remember { mutableStateOf<LibraryBackupPreview?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var backupOperationRunning by remember { mutableStateOf(false) }
 
     LaunchedEffect(viewModel) {
         try {
@@ -102,7 +103,9 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                 color = Color(0xFFFFCC80), fontSize = 12.sp
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
+                Button(enabled = !backupOperationRunning, onClick = {
+                    if (backupOperationRunning) return@Button
+                    backupOperationRunning = true
                     scope.launch {
                         try {
                             val restored = withContext(Dispatchers.IO) {
@@ -116,10 +119,14 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                             throw cancelled
                         } catch (_: Exception) {
                             message = "復元に失敗しました。元データと保留中のバックアップを確認してください"
+                        } finally {
+                            backupOperationRunning = false
                         }
                     }
                 }) { Text("復元を再試行") }
-                OutlinedButton(onClick = {
+                OutlinedButton(enabled = !backupOperationRunning, onClick = {
+                    if (backupOperationRunning) return@OutlinedButton
+                    backupOperationRunning = true
                     scope.launch {
                         try {
                             withContext(Dispatchers.IO) { viewModel.discardPendingLibraryBackupRestore() }
@@ -129,6 +136,8 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                             throw cancelled
                         } catch (_: Exception) {
                             message = "保留中のバックアップを破棄できませんでした"
+                        } finally {
+                            backupOperationRunning = false
                         }
                     }
                 }) { Text("保留を破棄", color = Color.White) }
@@ -150,7 +159,7 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
     val currentPreview = preview
     if (currentPreview != null && pendingJson != null) {
         AlertDialog(
-            onDismissRequest = { preview = null; pendingJson = null },
+            onDismissRequest = { if (!backupOperationRunning) { preview = null; pendingJson = null } },
             title = { Text("バックアップを確認") },
             text = {
                 Text(
@@ -161,9 +170,10 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
             },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(6.dp)) {
-                    Button(onClick = {
+                    Button(enabled = !backupOperationRunning, onClick = {
                         val json = pendingJson
-                        if (json != null) {
+                        if (json != null && !backupOperationRunning) {
+                            backupOperationRunning = true
                             scope.launch {
                                 try {
                                     val restored = withContext(Dispatchers.IO) {
@@ -179,14 +189,18 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                                     throw cancelled
                                 } catch (_: Exception) {
                                     message = "復元に失敗しました。既存データと保留中のバックアップを確認してください"
+                                } finally {
+                                    backupOperationRunning = false
                                 }
                             }
                         }
                     }) { Text("統合") }
                     Button(
+                        enabled = !backupOperationRunning,
                         onClick = {
                             val json = pendingJson
-                            if (json != null) {
+                            if (json != null && !backupOperationRunning) {
+                                backupOperationRunning = true
                                 scope.launch {
                                     try {
                                         val restored = withContext(Dispatchers.IO) {
@@ -202,6 +216,8 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                                         throw cancelled
                                     } catch (_: Exception) {
                                         message = "復元に失敗しました。既存データと保留中のバックアップを確認してください"
+                                    } finally {
+                                        backupOperationRunning = false
                                     }
                                 }
                             }
@@ -210,7 +226,11 @@ fun LibraryBackupTransferSection(viewModel: PlayerViewModel) {
                     ) { Text("置き換え") }
                 }
             },
-            dismissButton = { OutlinedButton(onClick = { preview = null; pendingJson = null }) { Text("キャンセル") } }
+            dismissButton = {
+                OutlinedButton(enabled = !backupOperationRunning, onClick = { preview = null; pendingJson = null }) {
+                    Text("キャンセル")
+                }
+            }
         )
     }
 }
