@@ -23,6 +23,7 @@ proposals are kept only where they explain a current constraint. Decisions marke
 | D-011 | An always-available in-app mini player is the top product priority after the shared playback contract. | ACTIVE | Phase 6B-2 MVP was integrated through PR #24 and received Owner-reported 12/12 device acceptance. Gate 3 reconnect retention remains an open risk. |
 | D-012 | Stop new Glass/immersive-art research. | ACTIVE | Preserve research material; do not spend implementation time on it. |
 | D-013 | Preserve existing playback, lyrics, audio-quality diagnostics, staged SDK migration, and Git-external archive practice. | ACTIVE | These are constraints, not optional cleanup targets. |
+| D-014 | Phase 8 autonomous development is authorized from Phase 7G HEAD `b69d1e605b0021cf816cc9330210a8fb73c4382d`. | ACTIVE | Use a dedicated branch; pursue safe product integration, experiments, performance work, reviews, tests, and Draft PRs. Do not merge `main`, alter PR #29–#31 HEADs, touch v2.5.2, use production signing, or run device/ADB/Mac work. |
 
 ## Superseded decisions
 
@@ -98,6 +99,25 @@ proposals are kept only where they explain a current constraint. Decisions marke
   claims Gate 3 fully passed nor restarts its device test cycle.
 - Gate 5 candidate research may proceed, but no Gate 5 implementation or Release APK
   generation is authorized by this integration decision.
+
+### 2026-11-28 — Phase 7G accepted; Phase 8 autonomous development authorized
+
+- Owner accepted Phase 7G and authorized Phase 8 work from
+  `phase7g/integration` HEAD `b69d1e605b0021cf816cc9330210a8fb73c4382d`, tree
+  `2b9e3f50456a6b0e56b1a533cbd05f9dcc386bf6`.
+- The accepted Phase 7G candidate remains Draft PR #31. Preserve PR #29, #30, and #31
+  heads and artifacts. Create a dedicated Phase 8 branch; a cumulative integration candidate
+  may target `main` so standard CodeQL and required CI can run, but it must remain unmerged.
+- Owner authorizes research, implementation, OSS evaluation, numeric experiments, performance
+  measurement, regression testing, commits, and Draft PRs across Phase 8A–8H without waiting
+  for per-step approval.
+- Keep replay-gain/DSP default-off until numerical safety and item-transition semantics are
+  proven. A Cloud result does not establish listening quality, physical-device performance,
+  or Gate 3 reconnect paused-retention. Do not restart Gate 3 device tests.
+- Do not change v2.5.2 or `main`; do not access Mac, ADB, devices, personal media/data, or
+  production signing; do not build/sign/distribute a production Release or publish an APK.
+- Continue using the six authorized Luna High subagents as available; the coordinator remains
+  Terra or lower. No Sol/Astra delegation is authorized.
 
 ## Standing delivery rules
 

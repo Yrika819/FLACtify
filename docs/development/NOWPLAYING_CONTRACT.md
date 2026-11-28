@@ -1,13 +1,14 @@
 # NowPlayingUiState Contract
 
-Status: **normative target for Phase 6B Gate 3; not implemented at the baseline**
+Status: **normative contract; implemented in Phase 6B/Phase 7G**
 
 Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (2026-11-27)
 
 This contract defines the single read-only now-playing snapshot that the existing full
-player and the future mini player must consume. It is a design requirement, not a claim
-that the type already exists. At the baseline, `PlayerViewModel` exposes separate state
-flows, and no `NowPlayingUiState` class is present.
+player and mini player consume. The baseline note above is historical: `NowPlayingUiState`
+and its Media3-backed `PlayerViewModel` flow are present in the Phase 7G candidate. Gate 3's
+reconnect paused-retention assertion remains an unresolved risk; do not report Gate 3 fully
+passed or restart its device cycle without a separate Owner decision.
 
 ## Scope and authority
 

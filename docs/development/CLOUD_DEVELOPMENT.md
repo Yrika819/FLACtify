@@ -1,12 +1,14 @@
 # Cloud Development
 
-Status: Phase 6B-P0 migration preparation
+Status: Phase 6B-P0 migration baseline; Phase 8 Cloud work is Owner-authorized by
+`OWNER_DECISIONS.md` (2026-11-28)
 
 Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (2026-11-27)
 
-This document describes the Codex Cloud build environment and the Owner-approved private
-handoff for personal-use Release candidates. It does not authorize product changes or public
-binary distribution.
+This document records the Codex Cloud build environment and the Owner-approved private
+handoff for personal-use Release candidates. Its original migration-phase scope is historical.
+Phase 8 product development is now authorized within the dated decision in
+`OWNER_DECISIONS.md`; no public binary distribution or production Release is authorized.
 
 ## Scope
 

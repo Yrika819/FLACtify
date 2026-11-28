@@ -1,6 +1,12 @@
 # Project Status
 
-Status: FLACtify 2.5.2 personal-use release complete; public development continues
+Status: Phase 8 autonomous development in progress from the accepted Phase 7G candidate
+
+Active development baseline: `phase7g/integration` at
+`b69d1e605b0021cf816cc9330210a8fb73c4382d` (tree
+`2b9e3f50456a6b0e56b1a533cbd05f9dcc386bf6`). Phase 7G Draft PR #31 is open and unmerged.
+Phase 8 work is isolated on `phase8/autonomous-development`; `main`, v2.5.2, and PR #29–#31
+remain unchanged. See the Phase 8 record near the end of this document.
 
 Release code source: `26b26fec6776237346b513d36ad32fc1e3ce58a6` (`release/2.5.2-candidate`, 2026-11-28)
 
@@ -112,6 +118,22 @@ restarted as part of Phase 6B-2.
   paths to the repository.
 - Do not import private archive history or add the archive as a remote.
 - Device-only results must never be reported as cloud PASS.
+
+## Phase 7G and Phase 8
+
+On 2026-11-28 the Owner accepted the Phase 7G product candidate and authorized Phase 8
+autonomous development from the exact Phase 7G HEAD above. The cumulative Phase 7G candidate
+is recorded in Draft PR #31; it has not been merged. At its recorded HEAD, 474 JVM tests,
+Android validation, CodeQL (Java/Kotlin and C/C++), LGPL relink, and fresh-extraction
+Compliance passed. FoundationClosure was built for Owner validation; no Phase 7G device run
+was performed.
+
+Phase 8 may investigate and implement safe ReplayGain/DSP, Spatial/gapless, large-library and
+SAF, data-protection/interoperability, UI/UX, OSS, and performance improvements under the
+dated decision in `OWNER_DECISIONS.md`. Keep high-risk DSP and storage work isolated until
+numeric safety, reversibility, licensing, and regression evidence are established. A
+Cloud-only result never establishes listening quality, device performance, or the unresolved
+Gate 3 paused-retention behavior.
 
 ## Documentation map
 
