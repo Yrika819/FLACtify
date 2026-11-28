@@ -102,9 +102,9 @@ restarted as part of Phase 6B-2.
 2. **Phase 6B-2 — Mini-player MVP:** merged through PR #24 and accepted after Owner-reported
    12/12 manual device checks. See [`MINIPLAYER_SPEC.md`](MINIPLAYER_SPEC.md). Keep the Gate 3
    risk open; the manual acceptance does not close that separate finding.
-3. **Gate 5 — UX polish and stability:** candidate investigation is in progress. Prioritize
-   measured performance evidence and playback-flow review before choosing visual or control
-   changes; no Gate 5 implementation is authorized by this status update.
+3. **Gate 5 — UX polish and stability:** Phase 8 is authorized to improve the existing UI
+    and playback flow. Device validation remains a separate Owner gate.
+
 
 ## Non-negotiable constraints
 
@@ -134,6 +134,36 @@ dated decision in `OWNER_DECISIONS.md`. Keep high-risk DSP and storage work isol
 numeric safety, reversibility, licensing, and regression evidence are established. A
 Cloud-only result never establishes listening quality, device performance, or the unresolved
 Gate 3 paused-retention behavior.
+
+### Phase 8 implementation checkpoint (2026-11-28)
+
+The dedicated branch `phase8/autonomous-development` was created from the authorized
+Phase 7G base. At this checkpoint the cumulative candidate has product and internal changes
+on top of `b69d1e6`; it is not merged. PRs #29, #30, and #31 and the stable 2.5.2 release
+remain untouched.
+
+| Work | State | Evidence / remaining limit |
+| --- | --- | --- |
+| Large audio scan fallback | IMPLEMENTED | Seekable SAF descriptor metadata path avoids whole-file copies above the retained 1 GiB staging limit; synthetic scanner metadata tests pass. Embedded artwork is omitted on the oversized fallback. |
+| Tag edit staging safety | IMPLEMENTED | Bounded 64 KiB copy loops, 1 GiB source/output ceiling, free-space preflight, cancellation checks, and existing recovery/readback preserved; `TagEditorTest` passes. |
+| Opus multi-value preservation | CORE_ONLY | Multi-value tags and untouched lyrics/ReplayGain/artwork preservation are covered by synthetic tests; no personal media used. |
+| Backup recovery | CORE_ONLY | A durable pending-restore journal retains retry/discard state after failed rollback; Settings UI for presenting pending recovery is not yet integrated. |
+| M3U relative SAF resolver | CORE_ONLY | Safe resolver handles Unicode, percent-encoding, separators, traversal rejection, and ambiguity; current import UI still resolves exact known URIs only. |
+| Player and lyrics layout | IMPLEMENTED | Navigation-bar inset and weighted lyrics list changes; related UI tests pass. |
+| ReplayGain playback correction | POC / BLOCKED | Numeric PCM prototype passed 13 tests; safe Media3 item-transition synchronization and direct/offload/spatial bypass are unresolved, so no correction is applied to playback. |
+| Parametric EQ | POC | Default-disconnected RBJ biquad engine passed stability/headroom tests. No listening-quality claim. |
+| Performance | POC / UNVERIFIED on device | Synthetic JVM tests at 1k/10k/50k report host timings only; no device PSS, jank, SAF-provider latency, or frame-time measurement. |
+| UI screenshot validation | POC | Existing isolated Compose smoke render passed, but it does not draw product screens; product screenshot verification remains unavailable without dependency changes. |
+
+At candidate revision `e7b7e395053cce5d77e172113281755e4adb5c6c`, Cloud verification passed:
+482 JVM tests, full `test` lifecycle, lint, Debug APK, ReleaseValidation/R8, FoundationClosure
+APK, FoundationClosure instrumentation compilation, 16 KiB APK ZIP/native ELF checks, and
+LGPL relink proof. The debug APK is 53 MiB and unsigned ReleaseValidation APK is 35 MiB;
+the base and candidate APKs were not compared in a controlled size test. PR CodeQL, fresh
+release-extraction compliance, and Owner device checks remain pending or unavailable.
+
+The candidate is intended for a Draft PR against `main`; no merge, production signing,
+production release, public distribution, or device operation is authorized.
 
 ## Documentation map
 
