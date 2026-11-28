@@ -35,11 +35,18 @@ data class LibraryScanProgress(
     val failedFiles: List<String>
 )
 
+/** Whether a scan may reuse entries from the persisted library snapshot. */
+enum class LibraryScanMode {
+    INCREMENTAL,
+    COMPLETE
+}
+
 class LibraryScanner(
     private val metadataExtractor: TrackMetadataExtractor?,
     private val migrationWrite: (File, ByteArray) -> Unit = { file, bytes -> file.writeBytes(bytes) },
     private val migrationVerify: (File, ByteArray) -> Boolean = { file, bytes -> file.readBytes().contentEquals(bytes) }
 ) {
+    /** Differential validation used by normal startup and folder-switch scans. */
     suspend fun scan(
         context: Context,
         folderUri: Uri,
@@ -47,7 +54,37 @@ class LibraryScanner(
         onProgress: (LibraryScanProgress) -> Unit = {},
         shouldPersist: () -> Boolean = { true },
         persistIfCurrent: ((List<TrackData>) -> Unit)? = null
+    ): LibraryScanResult = scanInternal(
+        context, folderUri, cachedTracks, onProgress, shouldPersist, persistIfCurrent,
+        LibraryScanMode.INCREMENTAL
+    )
+
+    /**
+     * Explicit recovery path for a user-facing “rescan all” action. It deliberately discards
+     * cache entries for this invocation, refreshing metadata and format hints for every document.
+     * The caller owns any UI action that invokes it; normal scans remain incremental.
+     */
+    suspend fun fullRescan(
+        context: Context,
+        folderUri: Uri,
+        onProgress: (LibraryScanProgress) -> Unit = {},
+        shouldPersist: () -> Boolean = { true },
+        persistIfCurrent: ((List<TrackData>) -> Unit)? = null
+    ): LibraryScanResult = scanInternal(
+        context, folderUri, emptyList(), onProgress, shouldPersist, persistIfCurrent,
+        LibraryScanMode.COMPLETE
+    )
+
+    private suspend fun scanInternal(
+        context: Context,
+        folderUri: Uri,
+        cachedTracks: List<TrackData>,
+        onProgress: (LibraryScanProgress) -> Unit,
+        shouldPersist: () -> Boolean,
+        persistIfCurrent: ((List<TrackData>) -> Unit)?,
+        mode: LibraryScanMode
     ): LibraryScanResult = withContext(Dispatchers.IO) {
+        val cacheForScan = if (mode == LibraryScanMode.COMPLETE) emptyList() else cachedTracks
         val root = try {
             DocumentFile.fromTreeUri(context, folderUri)
         } catch (e: CancellationException) {
@@ -89,7 +126,7 @@ class LibraryScanner(
 
         val newParsedTracks = mutableListOf<TrackData>()
         val failedFiles = mutableListOf<String>()
-        val cachedMap = cachedTracks.associateBy { it.uri.toString() }
+        val cachedMap = cacheForScan.associateBy { it.uri.toString() }
         var hasChanges = false
         var cacheNeedsWrite = false
 
@@ -124,13 +161,20 @@ class LibraryScanner(
                 onProgress(LibraryScanProgress(files.size, index + 1, fileName, failedFiles.toList()))
                 continue
             }
+            val fileSize = try {
+                file.length().takeIf { it > 0L } ?: -1L
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                -1L
+            }
             onProgress(LibraryScanProgress(files.size, index, fileName, failedFiles.toList()))
 
             // The detected container is persisted with each cached track. On a validation scan,
             // an unchanged document can therefore be reused without reopening the provider just
             // to sniff its first bytes. A missing hint is deliberately a cache miss: older cache
             // files and hand-built callers still receive the content-based detection path below.
-            if (cached != null && isTimestampFresh(cached.lastModified, fileLastMod) &&
+            if (cached != null && isCacheEntryFresh(cached.lastModified, fileLastMod, cached.fileSize, fileSize) &&
                 cached.formatExtension?.let(::isSupportedFormatExtension) == true
             ) {
                 metadataExtractor?.fileExtensionCache?.set(file.uri, cached.formatExtension)
@@ -162,10 +206,15 @@ class LibraryScanner(
             }
             metadataExtractor?.fileExtensionCache?.set(file.uri, detectedExt)
 
-            if (cached != null && isTimestampFresh(cached.lastModified, fileLastMod)) {
-                val withFormat = cached.copy(originalIndex = index, formatExtension = detectedExt)
+            if (cached != null && isCacheEntryFresh(cached.lastModified, fileLastMod, cached.fileSize, fileSize)) {
+                val withFormat = cached.copy(
+                    originalIndex = index,
+                    formatExtension = detectedExt,
+                    fileSize = fileSize.takeIf { it > 0L } ?: cached.fileSize
+                )
                 newParsedTracks.add(withFormat)
-                cacheNeedsWrite = cacheNeedsWrite || cached.formatExtension != detectedExt
+                cacheNeedsWrite = cacheNeedsWrite || cached.formatExtension != detectedExt ||
+                    (cached.fileSize <= 0L && fileSize > 0L)
                 continue
             }
 
@@ -298,7 +347,8 @@ class LibraryScanner(
                         uri = file.uri,
                         albumArtBytes = artBytes,
                         lastModified = fileLastMod,
-                        formatExtension = fileExt
+                        formatExtension = fileExt,
+                        fileSize = fileSize
                     )
                 )
             } catch (t: Throwable) {
@@ -316,7 +366,7 @@ class LibraryScanner(
                 failure = IllegalStateException("One or more files could not be read")
             )
         }
-        val libraryChanged = hasChanges || cachedTracks.size != newParsedTracks.size || cachedTracks.isEmpty()
+        val libraryChanged = hasChanges || cacheForScan.size != newParsedTracks.size || cacheForScan.isEmpty()
         if (libraryChanged || cacheNeedsWrite) {
             if (persistIfCurrent != null) {
                 persistIfCurrent(newParsedTracks)
@@ -329,6 +379,9 @@ class LibraryScanner(
 
     fun saveCache(context: Context, folderUri: Uri, tracks: List<TrackData>) {
         try {
+            require(tracks.size <= MAX_CACHED_TRACKS) {
+                "Library cache exceeds the $MAX_CACHED_TRACKS track limit"
+            }
             val root = JSONObject().apply {
                 put("version", 1)
                 put("folderUri", folderUri.toString())
@@ -349,14 +402,19 @@ class LibraryScanner(
                     put("u", track.uri.toString())
                     put("lm", track.lastModified)
                     track.formatExtension?.let { put("fx", it) }
+                    if (track.fileSize > 0L) put("fs", track.fileSize)
                 })
             }
             root.put("data", array)
+            val bytes = root.toString().toByteArray(Charsets.UTF_8)
+            require(bytes.size <= MAX_CACHE_BYTES) {
+                "Library cache exceeds the $MAX_CACHE_BYTES byte limit"
+            }
 
             val atomicFile = AtomicFile(cacheFile(context))
             val output = atomicFile.startWrite()
             try {
-                output.write(root.toString().toByteArray(Charsets.UTF_8))
+                output.write(bytes)
                 atomicFile.finishWrite(output)
             } catch (e: Exception) {
                 atomicFile.failWrite(output)
@@ -372,9 +430,9 @@ class LibraryScanner(
             val destination = cacheFile(context)
             val legacy = File(context.filesDir, LEGACY_CACHE_FILE_NAME)
             val existing =
-                destination.takeIf { it.isFile }?.let { runCatching { parseCacheSnapshot(it.readText()) }.getOrNull() }
+                destination.takeIf { it.isFile }?.let { runCatching { readCacheText(it)?.let(::parseCacheSnapshot) }.getOrNull() }
             if (existing != null) {
-                if (legacy.isFile && runCatching {
+                if (legacy.isFile && legacy.length() <= MAX_CACHE_BYTES && runCatching {
                         legacy.readBytes().contentEquals(destination.readBytes())
                     }.getOrDefault(false)) {
                     legacy.delete()
@@ -384,7 +442,7 @@ class LibraryScanner(
             if (destination.exists() || File(destination.path + ".bak").exists()) AtomicFile(destination).delete()
             if (legacy.isFile) migrateLegacyCache(legacy, destination)
             if (!destination.isFile) return null
-            parseCacheSnapshot(destination.readText())
+            readCacheText(destination)?.let(::parseCacheSnapshot)
         } catch (e: Exception) {
             Log.e("FLACtify", "Unable to read library cache", e)
             null
@@ -398,10 +456,12 @@ class LibraryScanner(
     }
 
     private fun parseCacheSnapshot(json: String): LibraryCacheSnapshot? {
+        if (json.toByteArray(Charsets.UTF_8).size > MAX_CACHE_BYTES) return null
         val root = JSONObject(json)
         if (root.optInt("version", -1) != 1) return null
         val folderUri = root.optString("folderUri", "").takeIf { it.isNotBlank() }?.let(Uri::parse) ?: return null
         val array = root.optJSONArray("data") ?: return null
+        if (array.length() > MAX_CACHED_TRACKS) return null
         val list = mutableListOf<TrackData>()
 
         for (i in 0 until array.length()) {
@@ -422,6 +482,7 @@ class LibraryScanner(
                     lastModified = obj.optLong("lm", 0L),
                     formatExtension = obj.optString("fx")
                         .takeIf(::isSupportedFormatExtension),
+                    fileSize = obj.optLong("fs", -1L).takeIf { it > 0L } ?: -1L,
                     originalIndex = i
                 )
             )
@@ -430,7 +491,9 @@ class LibraryScanner(
     }
 
     private fun migrateLegacyCache(legacy: File, destination: File) {
+        if (legacy.length() > MAX_CACHE_BYTES) return
         val source = legacy.readBytes()
+        if (source.size > MAX_CACHE_BYTES) return
         if (parseCacheSnapshot(source.toString(Charsets.UTF_8)) == null) return
         val staged = File.createTempFile("${CACHE_FILE_NAME}.", ".migration", destination.parentFile)
         try {
@@ -454,12 +517,36 @@ class LibraryScanner(
 
     private fun cacheFile(context: Context): File = File(libraryCacheDirectory(context), CACHE_FILE_NAME)
 
+    private fun readCacheText(file: File): String? {
+        if (!file.isFile || file.length() > MAX_CACHE_BYTES) return null
+        return file.readText()
+    }
+
     companion object {
         private fun isSupportedFormatExtension(extension: String): Boolean =
             extension in setOf("flac", "wav", "ogg", "opus", "m4a", "mp3")
 
         internal fun isTimestampFresh(cached: Long, current: Long): Boolean =
             cached > 0L && current > 0L && cached == current
+
+        /**
+         * Validates both provider metadata fields when available. A non-positive timestamp is
+         * treated as untrustworthy; equal positive lengths can still permit a bounded incremental
+         * reuse in that case. Size and mtime are metadata hints, not a content identity guarantee.
+         */
+        internal fun isCacheEntryFresh(
+            cachedTimestamp: Long,
+            currentTimestamp: Long,
+            cachedSize: Long,
+            currentSize: Long
+        ): Boolean {
+            val sizesKnown = cachedSize > 0L && currentSize > 0L
+            if (sizesKnown && cachedSize != currentSize) return false
+            if (cachedTimestamp > 0L && currentTimestamp > 0L) {
+                return cachedTimestamp == currentTimestamp
+            }
+            return sizesKnown
+        }
 
         internal fun ownsFolder(snapshot: LibraryCacheSnapshot?, folderUri: Uri): Boolean =
             ownsFolderUri(snapshot?.folderUri?.toString(), folderUri.toString())
@@ -473,28 +560,43 @@ class LibraryScanner(
             File(context.cacheDir, "flactify-library").apply { mkdirs() }
 
         fun workDirectory(context: Context): File = File(context.cacheDir, "flactify-work").apply { mkdirs() }
+
+        private const val MAX_SCAN_DEPTH = 32
+        private const val MAX_SCAN_FILES = 25_000
+        private const val MAX_CACHED_TRACKS = MAX_SCAN_FILES
+        private const val MAX_CACHE_BYTES = 16 * 1024 * 1024
     }
 
     fun collectAudioFiles(dir: DocumentFile): List<DocumentFile> {
-        val result = mutableListOf<DocumentFile>()
-        dir.listFiles().forEach { file ->
-            if (file.isDirectory) {
-                result.addAll(collectAudioFiles(file))
-            } else {
-                val name = file.name?.lowercase() ?: ""
-                if (listOf(".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus").any(name::endsWith)) {
-                    result.add(file)
-                }
-            }
+        return collectCandidateFiles(dir).filter { file ->
+            val name = file.name?.lowercase() ?: ""
+            listOf(".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus").any(name::endsWith)
         }
-        return result.sortedBy { it.name }
     }
 
-    private fun collectCandidateFiles(dir: DocumentFile): List<DocumentFile> {
-        val result = mutableListOf<DocumentFile>()
+    private fun collectCandidateFiles(dir: DocumentFile): List<DocumentFile> =
+        collectCandidateFiles(dir, depth = 0, result = mutableListOf())
+
+    private fun collectCandidateFiles(
+        dir: DocumentFile,
+        depth: Int,
+        result: MutableList<DocumentFile>
+    ): List<DocumentFile> {
+        if (depth > MAX_SCAN_DEPTH) {
+            throw IllegalStateException("Library folder nesting exceeds the $MAX_SCAN_DEPTH level limit")
+        }
+        if (result.size >= MAX_SCAN_FILES) {
+            throw IllegalStateException("Library contains more than the $MAX_SCAN_FILES file limit")
+        }
         dir.listFiles().forEach { file ->
-            if (file.isDirectory) result.addAll(collectCandidateFiles(file))
-            else result.add(file)
+            if (file.isDirectory) {
+                collectCandidateFiles(file, depth + 1, result)
+            } else {
+                if (result.size >= MAX_SCAN_FILES) {
+                    throw IllegalStateException("Library contains more than the $MAX_SCAN_FILES file limit")
+                }
+                result.add(file)
+            }
         }
         return result.sortedBy { it.name }
     }

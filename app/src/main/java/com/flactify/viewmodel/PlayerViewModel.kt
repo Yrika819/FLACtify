@@ -85,7 +85,9 @@ data class TrackData(
      * unchanged SAF document. This is a cache hint rather than user-facing track metadata, so it
      * intentionally does not participate in value equality.
      */
-    val formatExtension: String? = null
+    val formatExtension: String? = null,
+    /** Provider-reported byte length, or -1 when the provider did not expose one. */
+    val fileSize: Long = -1L
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
