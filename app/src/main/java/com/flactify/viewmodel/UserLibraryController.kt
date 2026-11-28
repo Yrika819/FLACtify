@@ -54,4 +54,10 @@ class UserLibraryController internal constructor(
     fun restoreBackup(json: String): Boolean = libraryManager.restoreBackup(json)
 
     fun mergeBackup(json: String): Boolean = libraryManager.mergeBackup(json)
+
+    fun pendingRestorePreview(): LibraryBackupPreview? = libraryManager.pendingRestorePreview()
+
+    fun retryPendingRestore(): Boolean = libraryManager.retryPendingRestore()
+
+    fun discardPendingRestore() = libraryManager.discardPendingRestore()
 }

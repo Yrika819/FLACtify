@@ -22,6 +22,9 @@ internal data class PlayStatsValues(
 class LibraryManager(context: Context) {
     private val favPrefs: SharedPreferences = context.getSharedPreferences("flactify_library", Context.MODE_PRIVATE)
     private val cacheDir: File = LibraryScanner.libraryCacheDirectory(context)
+    // Keep the journal beside (but outside) the library cache directory: clearCache() must not
+    // erase an interrupted restore intent before the user can retry it.
+    private val restoreJournal = LibraryBackupJournal(File(context.cacheDir, "library-restore.pending"))
     private var playlistsCanBeRewritten = true
     private var statsCanBeRewritten = true
 
@@ -152,6 +155,8 @@ class LibraryManager(context: Context) {
      */
     fun restoreBackup(json: String): Boolean {
         val backup = LibraryBackupCodec.decode(json) ?: return false
+        val staged = runCatching { restoreJournal.stage(json) }.isSuccess
+        if (!staged) return false
         val previous = LibraryBackup(
             favorites = getFavorites(),
             playlists = getPlaylists(),
@@ -166,18 +171,32 @@ class LibraryManager(context: Context) {
             // SharedPreferences normally leaves values untouched on a failed commit, but the
             // contract does not promise that. Best-effort rollback keeps a transient failure from
             // exposing a partially replaced in-memory library.
-            favPrefs.edit()
-                .putStringSet("favorites", previous.favorites)
-                .putString("playlists", LibraryBackupCodec.encodePlaylists(previous.playlists))
-                .putString("stats", LibraryBackupCodec.encodeStats(previous.stats))
-                .commit()
+            val rolledBack = runCatching {
+                favPrefs.edit()
+                    .putStringSet("favorites", previous.favorites)
+                    .putString("playlists", LibraryBackupCodec.encodePlaylists(previous.playlists))
+                    .putString("stats", LibraryBackupCodec.encodeStats(previous.stats))
+                    .commit()
+            }.getOrDefault(false)
+            if (rolledBack) {
+                restoreJournal.clear()
+            }
+            // Keep the staged incoming backup when rollback itself fails. A later process can
+            // inspect pendingRestorePreview() and retry rather than silently losing the intent.
         }
         if (restored) {
             playlistsCanBeRewritten = true
             statsCanBeRewritten = true
+            restoreJournal.clear()
         }
         return restored
     }
+
+    fun pendingRestorePreview(): LibraryBackupPreview? = restoreJournal.read()?.let(LibraryBackupCodec::preview)
+
+    fun retryPendingRestore(): Boolean = restoreJournal.read()?.let(::restoreBackup) ?: false
+
+    fun discardPendingRestore() = restoreJournal.clear()
 
     private fun saveAllStats(stats: Map<String, PlayStats>) {
         if (!statsCanBeRewritten) return

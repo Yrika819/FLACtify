@@ -8,6 +8,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Base64
+import java.util.Locale
 
 /** Bounded reader for the OpusTags packet (RFC 7845); malformed metadata is ignored. */
 internal object OpusTags {
@@ -93,6 +94,17 @@ internal object OpusTags {
         packet: ByteArray,
         fields: Map<String, String?>,
         frontCoverJpeg: ByteArray?
+    ): ByteArray = updatePacketValues(
+        packet,
+        fields.mapValues { (_, value) -> value?.let(::listOf) },
+        frontCoverJpeg
+    )
+
+    /** Updates fields while retaining multiple values for keys such as lyrics or custom tags. */
+    internal fun updatePacketValues(
+        packet: ByteArray,
+        fields: Map<String, List<String>?>,
+        frontCoverJpeg: ByteArray?
     ): ByteArray {
         require(packet.size in 16..MAX_PACKET_BYTES) { "Invalid OpusTags packet size" }
         require(packet.copyOfRange(0, 8).contentEquals("OpusTags".toByteArray(Charsets.US_ASCII))) {
@@ -114,10 +126,10 @@ internal object OpusTags {
         }
         val trailingData = ByteArray(buffer.remaining()).also(buffer::get)
 
-        val normalizedFields = fields.mapKeys { it.key.uppercase() }
+        val normalizedFields = fields.mapKeys { it.key.uppercase(Locale.ROOT) }
         comments.removeAll { raw -> raw.keyOrNull()?.let(normalizedFields::containsKey) == true }
-        normalizedFields.forEach { (key, value) ->
-            if (!value.isNullOrBlank()) {
+        normalizedFields.forEach { (key, values) ->
+            values.orEmpty().filter(String::isNotBlank).forEach { value ->
                 require(key.isNotBlank() && key.all { it.code in 0x20..0x7d && it != '=' })
                 comments += "$key=$value".toByteArray(Charsets.UTF_8)
             }
@@ -169,7 +181,7 @@ internal object OpusTags {
     private fun ByteArray.keyOrNull(): String? {
         val separator = indexOf('='.code.toByte())
         if (separator <= 0) return null
-        return String(this, 0, separator, Charsets.US_ASCII).uppercase()
+        return String(this, 0, separator, Charsets.US_ASCII).uppercase(Locale.ROOT)
     }
 
     private fun ByteArray.isFrontCoverPictureComment(): Boolean = try {
@@ -209,7 +221,13 @@ internal object OpusTags {
         write(value and 0xff)
     }
 
-    private fun parseComments(packet: ByteArray): Map<String, String> {
+    internal fun readPacketValues(packet: ByteArray): Map<String, List<String>> =
+        parseCommentValues(packet).mapValues { (_, values) -> values.toList() }
+
+    private fun parseComments(packet: ByteArray): Map<String, String> =
+        parseCommentValues(packet).mapValues { (_, values) -> values.last() }
+
+    private fun parseCommentValues(packet: ByteArray): Map<String, MutableList<String>> {
         return try {
             val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
             buffer.position(8)
@@ -218,7 +236,7 @@ internal object OpusTags {
             buffer.position(buffer.position() + vendorLength)
             val count = readLength(buffer)
             require(count <= MAX_TAGS)
-            val result = linkedMapOf<String, String>()
+            val result = linkedMapOf<String, MutableList<String>>()
             repeat(count) {
                 val length = readLength(buffer)
                 require(length <= buffer.remaining())
@@ -227,10 +245,10 @@ internal object OpusTags {
                 val text = String(bytes, Charsets.UTF_8)
                 val separator = text.indexOf('=')
                 if (separator > 0) {
-                    val key = text.substring(0, separator).uppercase()
+                    val key = text.substring(0, separator).uppercase(Locale.ROOT)
                     val value = text.substring(separator + 1)
                     if (key != "METADATA_BLOCK_PICTURE" || hasFrontCoverPictureType(value)) {
-                        result[key] = value
+                        result.getOrPut(key) { ArrayList() }.add(value)
                     }
                 }
             }
