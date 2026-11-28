@@ -3,7 +3,6 @@ package com.flactify.audio
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import java.io.DataInputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -89,12 +88,12 @@ class AudioSourceReader(private val context: Context) {
 
     /**
      * Parses the FLAC STREAMINFO metadata block, which is always the first block in a FLAC
-     * stream. Bounded to 64 KiB so a malformed file cannot cause a large read.
+     * stream. This path intentionally does not wrap the provider stream in a buffered stream: the
+     * parser only needs 42 bytes (the signature, block header, and fixed-size STREAMINFO payload),
+     * so a provider cannot be asked to read ahead into audio data.
      */
     private fun readFlacStreamInfo(uri: Uri): FlacStreamInfo? = try {
-        context.contentResolver.openInputStream(uri)?.use { raw ->
-            DataInputStream(raw.buffered()).use { input -> readFlacStreamInfoOrNull(input) }
-        }
+        context.contentResolver.openInputStream(uri)?.use(::readFlacStreamInfoOrNull)
     } catch (e: Exception) {
         null
     }

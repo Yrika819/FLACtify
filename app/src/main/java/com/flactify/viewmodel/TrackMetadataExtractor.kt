@@ -40,6 +40,13 @@ internal fun compactArtworkBytes(data: ByteArray?): ByteArray? {
 private const val MAX_ARTWORK_EDGE = 32_768
 private const val MAX_ARTWORK_PIXELS = 100_000_000L
 
+// FLAC metadata block lengths are 24-bit values. Keep metadata extraction bounded even when a
+// provider serves a hostile header; lyric extraction only needs one comment at a time.
+private const val MAX_FLAC_METADATA_BLOCK_BYTES = 8 * 1024 * 1024
+private const val MAX_FLAC_COMMENT_BYTES = 1 * 1024 * 1024
+private const val MAX_FLAC_COMMENT_COUNT = 4096
+private const val MAX_ID3_TAG_BYTES = 16 * 1024 * 1024
+
 internal fun BitmapFactory.Options.hasSafeArtworkDimensions(): Boolean =
     outWidth > 0 && outHeight > 0 &&
         outWidth <= MAX_ARTWORK_EDGE && outHeight <= MAX_ARTWORK_EDGE &&
@@ -388,26 +395,19 @@ class TrackMetadataExtractor(private val context: Context) {
     private fun extractLyricsFromFlac(inputStream: InputStream): String? {
         try {
             val header = ByteArray(4)
-            if (inputStream.read(header) != 4) return null
+            if (!readFully(inputStream, header)) return null
 
-            if (String(header) != "fLaC") {
+            if (String(header, Charsets.US_ASCII) != "fLaC") {
                 if (header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
-                    val skipBytes = ByteArray(2)
-                    if (inputStream.read(skipBytes) != 2) return null
-                    val id3SizeBytes = ByteArray(4)
-                    if (inputStream.read(id3SizeBytes) != 4) return null
+                    val id3HeaderTail = ByteArray(6)
+                    if (!readFully(inputStream, id3HeaderTail)) return null
+                    val id3SizeBytes = id3HeaderTail.copyOfRange(2, 6)
                     val id3Size = ((id3SizeBytes[0].toInt() and 0x7F) shl 21) or
                             ((id3SizeBytes[1].toInt() and 0x7F) shl 14) or
                             ((id3SizeBytes[2].toInt() and 0x7F) shl 7) or
                             (id3SizeBytes[3].toInt() and 0x7F)
-                    val skipTotal = id3Size.toLong()
-                    var skipped = 0L
-                    while (skipped < skipTotal) {
-                        val result = inputStream.skip(skipTotal - skipped)
-                        if (result <= 0) break
-                        skipped += result
-                    }
-                    if (inputStream.read(header) != 4 || String(header) != "fLaC") return null
+                    if (id3Size > MAX_ID3_TAG_BYTES || !skipFully(inputStream, id3Size.toLong())) return null
+                    if (!readFully(inputStream, header) || String(header, Charsets.US_ASCII) != "fLaC") return null
                 } else {
                     return null
                 }
@@ -416,59 +416,107 @@ class TrackMetadataExtractor(private val context: Context) {
             var isLastBlock = false
             while (!isLastBlock) {
                 val blockHeader = ByteArray(4)
-                if (inputStream.read(blockHeader) != 4) break
+                if (!readFully(inputStream, blockHeader)) return null
 
                 val headerInt = ByteBuffer.wrap(blockHeader).order(ByteOrder.BIG_ENDIAN).int
                 isLastBlock = (headerInt shr 31 and 0x01) == 1
                 val blockType = headerInt shr 24 and 0x7F
                 val blockLength = headerInt and 0x00FFFFFF
+                if (blockLength > MAX_FLAC_METADATA_BLOCK_BYTES) return null
 
                 if (blockType == 4) {
-                    val commentData = ByteArray(blockLength)
-                    var readBytes = 0
-                    while (readBytes < blockLength) {
-                        val result = inputStream.read(commentData, readBytes, blockLength - readBytes)
-                        if (result == -1) break
-                        readBytes += result
-                    }
-
-                    val buffer = ByteBuffer.wrap(commentData).order(ByteOrder.LITTLE_ENDIAN)
-
-                    val vendorLength = buffer.int
-                    if (vendorLength < 0 || vendorLength > buffer.remaining()) return null
-                    buffer.position(buffer.position() + vendorLength)
-
-                    val userCommentListLength = buffer.int
-                    for (i in 0 until userCommentListLength) {
-                        if (buffer.remaining() < 4) break
-                        val commentLength = buffer.int
-                        if (commentLength < 0 || commentLength > buffer.remaining()) break
-
-                        val commentBytes = ByteArray(commentLength)
-                        buffer.get(commentBytes)
-                        val comment = String(commentBytes, Charsets.UTF_8)
-
-                        if (comment.startsWith("LYRICS=", ignoreCase = true) ||
-                            comment.startsWith("UNSUCHEDLYRICS=", ignoreCase = true) ||
-                            comment.startsWith("SUBTITLE=", ignoreCase = true)
-                        ) {
-                            return comment.substringAfter("=")
-                        }
-                    }
+                    return readFlacVorbisCommentLyrics(inputStream, blockLength)
+                } else if (!skipFully(inputStream, blockLength.toLong())) {
                     return null
-                } else {
-                    var skipped = 0L
-                    while (skipped < blockLength) {
-                        val result = inputStream.skip(blockLength.toLong() - skipped)
-                        if (result <= 0) break
-                        skipped += result
-                    }
                 }
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
         return null
+    }
+
+    /**
+     * Reads a FLAC VORBIS_COMMENT block incrementally. Unknown comments are skipped rather than
+     * retaining the complete metadata block, and no length from the stream is trusted without
+     * checking it against the bytes remaining in the block.
+     */
+    private fun readFlacVorbisCommentLyrics(inputStream: InputStream, blockLength: Int): String? {
+        var remaining = blockLength.toLong()
+        val integer = ByteArray(4)
+
+        fun readLittleEndianInt(): Int? {
+            if (remaining < integer.size || !readFully(inputStream, integer)) return null
+            remaining -= integer.size
+            return (integer[0].toInt() and 0xff) or
+                ((integer[1].toInt() and 0xff) shl 8) or
+                ((integer[2].toInt() and 0xff) shl 16) or
+                ((integer[3].toInt() and 0xff) shl 24)
+        }
+
+        val vendorLength = readLittleEndianInt() ?: return null
+        if (vendorLength < 0 || vendorLength.toLong() > remaining) return null
+        if (!skipFully(inputStream, vendorLength.toLong())) return null
+        remaining -= vendorLength
+
+        val userCommentListLength = readLittleEndianInt() ?: return null
+        if (userCommentListLength < 0 || userCommentListLength > MAX_FLAC_COMMENT_COUNT) return null
+        repeat(userCommentListLength) {
+            val commentLength = readLittleEndianInt() ?: return null
+            if (commentLength < 0 || commentLength.toLong() > remaining) return null
+            if (commentLength > MAX_FLAC_COMMENT_BYTES) {
+                if (!skipFully(inputStream, commentLength.toLong())) return null
+                remaining -= commentLength
+                return@repeat
+            }
+
+            val commentBytes = ByteArray(commentLength)
+            if (!readFully(inputStream, commentBytes)) return null
+            remaining -= commentLength
+            val comment = String(commentBytes, Charsets.UTF_8)
+
+            if (comment.startsWith("LYRICS=", ignoreCase = true) ||
+                comment.startsWith("UNSUCHEDLYRICS=", ignoreCase = true) ||
+                comment.startsWith("SUBTITLE=", ignoreCase = true)
+            ) {
+                return comment.substringAfter("=")
+            }
+        }
+        // A valid comment block may carry trailing bytes. They are not part of the comment list,
+        // but consume them before returning so this helper remains correct if reused by a caller
+        // that continues parsing metadata blocks.
+        skipFully(inputStream, remaining)
+        return null
+    }
+
+    private fun readFully(inputStream: InputStream, buffer: ByteArray): Boolean {
+        var offset = 0
+        while (offset < buffer.size) {
+            val count = inputStream.read(buffer, offset, buffer.size - offset)
+            if (count < 0) return false
+            if (count == 0) {
+                val single = inputStream.read()
+                if (single < 0) return false
+                buffer[offset++] = single.toByte()
+            } else {
+                offset += count
+            }
+        }
+        return true
+    }
+
+    private fun skipFully(inputStream: InputStream, bytes: Long): Boolean {
+        var remaining = bytes
+        while (remaining > 0) {
+            val skipped = inputStream.skip(remaining)
+            if (skipped > 0) {
+                remaining -= skipped
+                continue
+            }
+            if (inputStream.read() < 0) return false
+            remaining--
+        }
+        return true
     }
 
     private fun parseLyrics(raw: String?): List<Pair<Long, String>> {
