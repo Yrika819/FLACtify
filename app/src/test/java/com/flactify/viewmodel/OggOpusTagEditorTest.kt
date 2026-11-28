@@ -54,6 +54,9 @@ class OggOpusTagEditorTest {
 
         val editedPages = readPages(edited.readBytes())
         val actualAudioPages = audioPagesAfterHeaders(editedPages)
+        editedPages.zipWithNext().forEach { (previous, next) ->
+            assertEquals((previous.sequence + 1L) and 0xffff_ffffL, next.sequence)
+        }
         assertEquals(originalAudioPages.map { it.flags }, actualAudioPages.map { it.flags })
         assertEquals(originalAudioPages.map { it.granule }, actualAudioPages.map { it.granule })
         assertEquals(originalAudioPages.map { it.body.toList() }, actualAudioPages.map { it.body.toList() })

@@ -51,7 +51,7 @@ internal object OggOpusTagEditor {
                 requirePage(head.size >= 19 && head.startsWith("OpusHead"), "Invalid Opus ID packet")
                 requirePage((head[8].toInt() and 0xf0) == 0, "Unsupported Opus header version")
 
-                val headerPages = mutableListOf(first)
+                var originalTagPageCount = 0
                 val tagsPacket = ByteArrayOutputStream()
                 var commentPacketComplete = false
                 var previousPageContinuesPacket = false
@@ -64,7 +64,7 @@ internal object OggOpusTagEditor {
                         (page.flags and OGG_CONTINUED != 0) == previousPageContinuesPacket,
                         "Invalid OpusTags continuation flag"
                     )
-                    headerPages += page
+                    originalTagPageCount++
                     var bodyOffset = 0
                     page.lacing.forEachIndexed { index, lace ->
                         if (tagsPacket.size().toLong() + lace > MAX_TAG_PACKET_BYTES) {
@@ -100,7 +100,7 @@ internal object OggOpusTagEditor {
                 output.write(first.bytes)
                 replacementTagPages.forEach(output::write)
 
-                val sequenceDelta = replacementTagPages.size.toLong() - (headerPages.size - 1L)
+                val sequenceDelta = replacementTagPages.size.toLong() - originalTagPageCount
                 var audioPageCount = 0L
                 var audioPageContinuesPacket = false
                 var reachedEndOfStream = false
