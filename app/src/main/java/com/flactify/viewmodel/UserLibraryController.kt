@@ -22,6 +22,7 @@ class UserLibraryController internal constructor(
 
     fun getPlaylistTracks(playlistId: String, allTracks: List<TrackData>): List<TrackData> {
         val playlist = getPlaylists().find { it.id == playlistId } ?: return emptyList()
+        playlist.smartQuery?.let { return it.filter(allTracks) }
         val uriMap = allTracks.associateBy { it.uri.toString() }
         return playlist.trackUris.mapNotNull { uriMap[it] }
     }

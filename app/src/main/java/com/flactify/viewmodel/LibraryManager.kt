@@ -9,7 +9,8 @@ import java.io.File
 data class Playlist(
     val id: String = java.util.UUID.randomUUID().toString(),
     val name: String,
-    val trackUris: List<String> = emptyList()
+    val trackUris: List<String> = emptyList(),
+    val smartQuery: SmartPlaylistQuery? = null
 )
 
 internal data class PlayStatsValues(
@@ -67,6 +68,7 @@ class LibraryManager(context: Context) {
                 put("id", p.id)
                 put("name", p.name)
                 put("trackUris", JSONArray(p.trackUris))
+                p.smartQuery?.let { put("smartQuery", smartQueryToJson(it)) }
             }
             arr.put(obj)
         }
@@ -179,12 +181,43 @@ class LibraryManager(context: Context) {
                             (0 until uris.length()).mapNotNull { uriIndex ->
                                 runCatching { uris.getString(uriIndex) }.getOrNull()
                             }
-                        }
+                        },
+                        smartQuery = runCatching { obj.getJSONObject("smartQuery") }
+                            .getOrNull()
+                            ?.let(::smartQueryFromJson)
                     )
                 }.getOrNull()
             }
         } catch (_: Exception) {
             emptyList()
+        }
+
+        private fun smartQueryToJson(query: SmartPlaylistQuery): JSONObject = JSONObject().apply {
+            query.titleContains?.let { put("titleContains", it) }
+            query.artistContains?.let { put("artistContains", it) }
+            query.albumContains?.let { put("albumContains", it) }
+            query.genreContains?.let { put("genreContains", it) }
+            query.yearContains?.let { put("yearContains", it) }
+            query.composerContains?.let { put("composerContains", it) }
+            query.albumArtistContains?.let { put("albumArtistContains", it) }
+        }
+
+        private fun smartQueryFromJson(obj: JSONObject): SmartPlaylistQuery? {
+            fun value(key: String): String? = obj.optString(key).takeIf { it.isNotBlank() }
+            val query = SmartPlaylistQuery(
+                titleContains = value("titleContains"),
+                artistContains = value("artistContains"),
+                albumContains = value("albumContains"),
+                genreContains = value("genreContains"),
+                yearContains = value("yearContains"),
+                composerContains = value("composerContains"),
+                albumArtistContains = value("albumArtistContains")
+            )
+            return query.takeUnless {
+                it.titleContains == null && it.artistContains == null && it.albumContains == null &&
+                    it.genreContains == null && it.yearContains == null && it.composerContains == null &&
+                    it.albumArtistContains == null
+            }
         }
 
         fun parseStats(json: String): Map<String, PlayStats> = try {
