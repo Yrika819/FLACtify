@@ -53,7 +53,9 @@ internal class TagEditFailure(
     cause: Throwable? = null
 ) : IOException(message, cause)
 
-class TagEditor {
+class TagEditor internal constructor(
+    private val recoveryMetadataWriter: (File, Uri, File, Long, String) -> Unit = ::writeRecoveryMetadata
+) {
     fun supportsFormat(format: String?): Boolean = format in SUPPORTED_FORMATS
 
     suspend fun updateTrackTags(
@@ -141,7 +143,7 @@ class TagEditor {
                 throw TagEditFailure(TagEditFailureCategory.RECOVERY_COPY, "Recovery copy could not be verified", e)
             }
             try {
-                writeRecoveryMetadata(recoveryMetadata, trackUri, recoveryFile, createdAt, "Tag write pending")
+                recoveryMetadataWriter(recoveryMetadata, trackUri, recoveryFile, createdAt, "Tag write pending")
             } catch (e: Exception) {
                 recoveryFile.delete()
                 if (e is CancellationException) throw e
@@ -157,7 +159,7 @@ class TagEditor {
                     recoveryPrepared = true
                 )
                 if (!recoveryFile.exists() || recoveryFile.delete()) recoveryMetadata.delete()
-                else writeRecoveryMetadata(recoveryMetadata, trackUri, recoveryFile, createdAt, "Edit succeeded; recovery copy retained")
+                else recoveryMetadataWriter(recoveryMetadata, trackUri, recoveryFile, createdAt, "Edit succeeded; recovery copy retained")
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 val restored = runCatching {
@@ -168,7 +170,7 @@ class TagEditor {
                     )
                 }.isSuccess
                 runCatching {
-                    writeRecoveryMetadata(
+                    recoveryMetadataWriter(
                         recoveryMetadata, trackUri, recoveryFile, createdAt,
                         if (restored) "Write failed; original restored and verified"
                         else "Write failed; recovery copy retained"
@@ -262,32 +264,32 @@ class TagEditor {
     }
 
 
-    private fun writeRecoveryMetadata(
-        destination: File,
-        originalUri: Uri,
-        recoveryFile: File,
-        createdAt: Long,
-        reason: String
-    ) {
-        val atomicFile = AtomicFile(destination)
-        val output = atomicFile.startWrite()
-        try {
-            val json = JSONObject()
-                .put("originalUri", originalUri.toString())
-                .put("createdAt", createdAt)
-                .put("reason", reason)
-                .put("recoveryFile", recoveryFile.name)
-            output.write(json.toString().toByteArray(Charsets.UTF_8))
-            atomicFile.finishWrite(output)
-        } catch (e: Exception) {
-            atomicFile.failWrite(output)
-            throw e
-        }
-    }
-
     companion object {
         const val MAX_RECOVERY_COPIES = 3
         val SUPPORTED_FORMATS = setOf("flac", "mp3", "m4a", "wav", "ogg", "opus")
+    }
+}
+
+private fun writeRecoveryMetadata(
+    destination: File,
+    originalUri: Uri,
+    recoveryFile: File,
+    createdAt: Long,
+    reason: String
+) {
+    val atomicFile = AtomicFile(destination)
+    val output = atomicFile.startWrite()
+    try {
+        val json = JSONObject()
+            .put("originalUri", originalUri.toString())
+            .put("createdAt", createdAt)
+            .put("reason", reason)
+            .put("recoveryFile", recoveryFile.name)
+        output.write(json.toString().toByteArray(Charsets.UTF_8))
+        atomicFile.finishWrite(output)
+    } catch (e: Exception) {
+        atomicFile.failWrite(output)
+        throw e
     }
 }
 
