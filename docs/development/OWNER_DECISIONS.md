@@ -2,7 +2,7 @@
 
 Status: active decision register
 
-Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (2026-11-27)
+Release code source: `26b26fec6776237346b513d36ad32fc1e3ce58a6` (2026-11-28)
 
 This register records product and delivery decisions that remain binding. Historical
 proposals are kept only where they explain a current constraint. Decisions marked
@@ -20,7 +20,7 @@ proposals are kept only where they explain a current constraint. Decisions marke
 | D-008 | Keep the detailed local roadmap/design archive outside Git and preserve it. | ACTIVE | Public documents are sanitized summaries. Do not copy the local archive or its absolute paths into the repository. |
 | D-009 | Liquid Glass / LiquidGrass is cancelled. | ACTIVE | Do not add glass shaders, refraction, or glass-quality settings. |
 | D-010 | Apple Music-style immersive cover-art expansion is cancelled. | ACTIVE | Keep the existing FLACtify full-player appearance. Old research remains historical only. |
-| D-011 | An always-available in-app mini player is the top product priority after the shared playback contract. | ACTIVE | Mini player is planned, but not started. Gate 3 must land first. |
+| D-011 | An always-available in-app mini player is the top product priority after the shared playback contract. | ACTIVE | Shared contract is merged. Owner authorized Phase 6B-2 to resume after Release 2.5.2; carry the unresolved Gate 3 reconnect retention risk. |
 | D-012 | Stop new Glass/immersive-art research. | ACTIVE | Preserve research material; do not spend implementation time on it. |
 | D-013 | Preserve existing playback, lyrics, audio-quality diagnostics, staged SDK migration, and Git-external archive practice. | ACTIVE | These are constraints, not optional cleanup targets. |
 
@@ -64,6 +64,23 @@ proposals are kept only where they explain a current constraint. Decisions marke
 - The migration branch is `infra/codex-cloud-readiness`; it must not merge product code or
   publish artifacts.
 - Device-only validation remains a separate gate. A cloud run cannot satisfy it.
+
+### 2026-11-28 — FLACtify 2.5.2 personal release and Phase 6B-2 readiness
+
+- Owner accepted Release 2.5.2 (`com.flactify`, versionCode 17) after existing-key signing,
+  Pixel 7a in-place update, and Owner device validation. This is a personal-use release;
+  no general-public APK/AAB release is authorized.
+- The signed APK SHA-256 is
+  `aca14135a9d40a9ac780f24e9792e4e4ac00e7b3a13e6a08e4beb2b7b8d9f3eb`. It was matched to
+  the Owner-uploaded APK. Its 218 non-signature payload entries match the Cloud-built
+  unsigned artifact recorded for source commit `26b26fec6776237346b513d36ad32fc1e3ce58a6`.
+- Gate 3's reconnect paused-retention assertion remains unresolved. No full Gate 3 PASS is
+  claimed, and its device test cycle remains stopped.
+- Owner authorizes Phase 6B-2 mini-player development to resume after this release closure.
+  This does not close the reconnect finding; carry it as a known risk in subsequent work.
+- The standard personal-release workflow is documented in
+  [`CLOUD_DEVELOPMENT.md`](CLOUD_DEVELOPMENT.md): Cloud unsigned Release build, owner-only
+  Drive handoff, then Mac-side alignment/signing with the existing key.
 
 ## Standing delivery rules
 

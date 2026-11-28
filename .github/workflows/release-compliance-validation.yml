@@ -77,13 +77,16 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          # fetch-depth: 0 can already contain the published v2.5.1 release tag; re-point it at the
-          # exact revision under test so tagging is idempotent. The checksum/relink steps below are
-          # unchanged, so this only fixes tag setup and does not weaken the compliance proof.
-          git tag -f v2.5.1 "$EXPECTED_SHA"
-          test "$(git rev-parse 'v2.5.1^{commit}')" = "$EXPECTED_SHA"
+          VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n 1)
+          test -n "$VERSION_NAME"
+          TAG="v$VERSION_NAME"
+          printf '%s\n' "$VERSION_NAME" > "$RUNNER_TEMP/release-version.txt"
+          # A release tag may already exist; this local-only tag points the bundle check at
+          # the exact revision under test. It is never pushed or published by this workflow.
+          git tag -f "$TAG" "$EXPECTED_SHA"
+          test "$(git rev-parse "$TAG^{commit}")" = "$EXPECTED_SHA"
           mkdir -p "$RUNNER_TEMP/bundle"
-          ./scripts/prepare-apk-compliance-bundle.sh v2.5.1 "$RUNNER_TEMP/bundle"
+          ./scripts/prepare-apk-compliance-bundle.sh "$TAG" "$RUNNER_TEMP/bundle"
           (cd "$RUNNER_TEMP/bundle" && sha256sum -c SHA256SUMS)
           cp "$RUNNER_TEMP/bundle/SHA256SUMS" "$RUNNER_TEMP/bundle-sha256.txt"
           cat "$RUNNER_TEMP/bundle/SHA256SUMS"
@@ -93,10 +96,12 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/fresh-extraction"
+          VERSION_NAME=$(cat "$RUNNER_TEMP/release-version.txt")
+          FLAC_SOURCE="FLACtify-v$VERSION_NAME-source.tar.gz"
           mkdir -p "$OUT/flactify" "$OUT/jaudiotagger"
-          tar -xzf "$RUNNER_TEMP/bundle/FLACtify-v2.5.1-source.tar.gz" -C "$OUT/flactify"
+          tar -xzf "$RUNNER_TEMP/bundle/$FLAC_SOURCE" -C "$OUT/flactify"
           tar -xzf "$RUNNER_TEMP/bundle/jaudiotagger-3.0.1-complete-source.tar.gz" -C "$OUT/jaudiotagger"
-          test -f "$OUT/flactify/FLACtify-v2.5.1-source/gradlew"
+          test -f "$OUT/flactify/FLACtify-v$VERSION_NAME-source/gradlew"
           test -f "$OUT/jaudiotagger/upstream/src/org/jaudiotagger/audio/AudioFile.java"
           case "$OUT" in "$GITHUB_WORKSPACE"/*) echo 'Extraction is inside checkout' >&2; exit 1;; esac
           echo "$OUT" > "$RUNNER_TEMP/extraction-root.txt"
@@ -105,7 +110,8 @@ jobs:
         run: |
           set -euo pipefail
           OUT=$(cat "$RUNNER_TEMP/extraction-root.txt")
-          PROJECT="$OUT/flactify/FLACtify-v2.5.1-source"
+          VERSION_NAME=$(cat "$RUNNER_TEMP/release-version.txt")
+          PROJECT="$OUT/flactify/FLACtify-v$VERSION_NAME-source"
           LIB="$OUT/jaudiotagger"
           WORK="$RUNNER_TEMP/rebuild"
           mkdir -p "$WORK"
@@ -138,7 +144,8 @@ jobs:
         run: |
           set -euo pipefail
           OUT=$(cat "$RUNNER_TEMP/extraction-root.txt")
-          PROJECT="$OUT/flactify/FLACtify-v2.5.1-source"
+          VERSION_NAME=$(cat "$RUNNER_TEMP/release-version.txt")
+          PROJECT="$OUT/flactify/FLACtify-v$VERSION_NAME-source"
           MODIFIED="$RUNNER_TEMP/rebuild/modified.jar"
           case "$PROJECT" in "$GITHUB_WORKSPACE"/*) echo 'Extracted project is inside checkout' >&2; exit 1;; esac
           cd "$PROJECT"

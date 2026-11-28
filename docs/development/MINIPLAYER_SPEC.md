@@ -1,13 +1,14 @@
 # Mini-Player Specification
 
-Status: **PLANNED / NOT IMPLEMENTED / NO-GO until Gate 3**
+Status: **PLANNED / NOT IMPLEMENTED / OWNER-AUTHORIZED TO RESUME after Release 2.5.2**
 
-Baseline: `eb2aad233e7dfe7c0fd0e567967ec9d854c1cae0` (2026-11-27)
+Shared-state source: `f70eb8d1bcf61c724b248d17f02fb60153dd561b` (PR #21 merge)
 
-This document defines the intended in-app mini player. It does not authorize product work
-during the cloud-migration phase. The mini player is the top product priority after the
-shared now-playing contract, but it must not start before that contract is implemented and
-reviewed.
+This document defines the intended in-app mini player. The shared now-playing contract is
+implemented and reviewed. On 2026-11-28, the Owner authorized Phase 6B-2 development to
+resume after Release 2.5.2 completion. Gate 3's reconnect paused-retention assertion remains
+an unresolved risk; this authorization does not mark Gate 3 fully passed. The risk must be
+carried into the mini-player PR and its validation plan.
 
 ## Preconditions
 

@@ -2,6 +2,9 @@
 
 **Purpose:** This document records FLACtify's technical compliance mechanism. It is not a legal opinion or legal certification. Do not treat the APK distribution gate as closed solely because this mechanism or source code exists.
 
+The Owner-approved personal-use Release 2.5.2 does not clear the general-public binary
+distribution gate. This document continues to track requirements for any future public APK/AAB.
+
 ## Candidate and components
 
 - Candidate first clean public binary: FLACtify `2.5.1` (`versionName = "2.5.1"` in `app/build.gradle.kts` at the time this phase began). Intended release tag: `v2.5.1`.
