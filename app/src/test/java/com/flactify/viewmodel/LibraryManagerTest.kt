@@ -82,20 +82,18 @@ class LibraryManagerTest {
     }
 
     @Test
-    fun `stats entry parser skips malformed siblings and clamps negative counters`() {
-        val stats = LibraryManager.parseStatsEntries(
-            listOf(
-                "content://one" to PlayStatsValues(playCount = 3, skipCount = -2, lastPlayed = 9L),
-                "broken" to null
-            )
+    fun `stats parser skips invalid rows without manufacturing zero values`() {
+        val stats = LibraryManager.parseStats(
+            """{"valid":{"pc":3,"sc":2,"lp":9},"negative":{"pc":3,"sc":-2,"lp":9},"missing":{"pc":5}}"""
         )
 
-        assertEquals(LibraryManager.PlayStats(playCount = 3, skipCount = 0, lastPlayed = 9L), stats["content://one"])
-        assertTrue(!stats.containsKey("broken"))
+        assertEquals(LibraryManager.PlayStats(playCount = 3, skipCount = 2, lastPlayed = 9L), stats["valid"])
+        assertTrue(!stats.containsKey("negative"))
+        assertTrue(!stats.containsKey("missing"))
     }
 
     @Test
-    fun `stats entry parser returns empty for entirely malformed entries`() {
-        assertTrue(LibraryManager.parseStatsEntries(listOf("broken" to null)).isEmpty())
+    fun `stats parser returns empty for malformed JSON`() {
+        assertTrue(LibraryManager.parseStats("{broken").isEmpty())
     }
 }

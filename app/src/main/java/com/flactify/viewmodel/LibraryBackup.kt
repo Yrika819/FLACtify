@@ -121,9 +121,6 @@ object LibraryBackupCodec {
         JSONObject(encode(LibraryBackup(emptySet(), playlists, emptyMap())))
             .getJSONArray("playlists").toString()
 
-    internal fun encodeStats(stats: Map<String, LibraryManager.PlayStats>): String =
-        JSONObject(encode(LibraryBackup(emptySet(), emptyList(), stats))).getJSONObject("stats").toString()
-
     private fun queryToJson(query: SmartPlaylistQuery) = JSONObject().apply {
         query.titleContains?.let { put("titleContains", validText(it, "smart query")) }
         query.artistContains?.let { put("artistContains", validText(it, "smart query")) }

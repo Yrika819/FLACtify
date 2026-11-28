@@ -37,14 +37,14 @@ class LibraryManagerJsonIntegrationTest {
 
     @Test
     fun frameworkJsonAdapterParsesValidEntriesAndSkipsMalformedSiblings() {
-        val stored = """{"content://one":{"pc":3,"sc":-2,"lp":9},"broken":[]}"""
+        val stored = """{"content://one":{"pc":3,"sc":2,"lp":9},"broken":[]}"""
         preferences.edit().putString("stats", stored).commit()
 
         val manager = LibraryManager(context)
         val stats = manager.getAllStats()
 
         assertEquals(
-            LibraryManager.PlayStats(playCount = 3, skipCount = 0, lastPlayed = 9L),
+            LibraryManager.PlayStats(playCount = 3, skipCount = 2, lastPlayed = 9L),
             stats["content://one"]
         )
         assertTrue(!stats.containsKey("broken"))

@@ -13,20 +13,21 @@ data class Playlist(
     val smartQuery: SmartPlaylistQuery? = null
 )
 
-internal data class PlayStatsValues(
-    val playCount: Int,
-    val skipCount: Int,
-    val lastPlayed: Long
-)
+class LibraryManager private constructor(
+    context: Context,
+    preferences: SharedPreferences
+) {
+    constructor(context: Context) : this(
+        context,
+        context.getSharedPreferences("flactify_library", Context.MODE_PRIVATE)
+    )
 
-class LibraryManager(context: Context) {
-    private val favPrefs: SharedPreferences = context.getSharedPreferences("flactify_library", Context.MODE_PRIVATE)
+    private val favPrefs: SharedPreferences = preferences
     private val cacheDir: File = LibraryScanner.libraryCacheDirectory(context)
     // A pending restore is user data, not a disposable cache entry. Keep it in the app's
     // non-backed-up files area so Android cache eviction cannot discard the recovery intent.
     private val restoreJournal = LibraryBackupJournal(File(context.noBackupFilesDir, "library-restore.pending"))
     private var playlistsCanBeRewritten = true
-    private var statsCanBeRewritten = true
 
     data class PlayStats(
         val playCount: Int = 0,
@@ -57,7 +58,10 @@ class LibraryManager(context: Context) {
     }
 
     fun getPlaylists(): List<Playlist> {
-        val json = favPrefs.getString("playlists", null) ?: return emptyList()
+        val json = favPrefs.getString("playlists", null) ?: run {
+            playlistsCanBeRewritten = true
+            return emptyList()
+        }
         val parsed = parsePlaylists(json)
         playlistsCanBeRewritten = runCatching { parsed.size == JSONArray(json).length() }.getOrDefault(false)
         return parsed
@@ -104,17 +108,23 @@ class LibraryManager(context: Context) {
 
     fun mergeBackup(json: String): Boolean {
         val incoming = LibraryBackupCodec.decode(json) ?: return false
-        val existingPlaylists = getPlaylists()
-        val existingById = existingPlaylists.associateBy { it.id }
-        val mergedPlaylists = existingPlaylists + incoming.playlists.filterNot { existingById.containsKey(it.id) }
-        val existingStats = getAllStats()
-        val mergedStats = existingStats + incoming.stats.filterKeys { it !in existingStats }
-        val merged = LibraryBackup(
-            favorites = getFavorites() + incoming.favorites,
-            playlists = mergedPlaylists,
-            stats = mergedStats
-        )
-        return restoreBackup(LibraryBackupCodec.encode(merged))
+        synchronized(STATS_LOCK) {
+            val existingPlaylists = getPlaylists()
+            if (!playlistsCanBeRewritten) return false
+            val existingById = existingPlaylists.associateBy { it.id }
+            val mergedPlaylists = existingPlaylists + incoming.playlists.filterNot { existingById.containsKey(it.id) }
+            val storedStats = readStats()
+            // A merge must not replace undecodable bytes with an incomplete parsed view.
+            if (!storedStats.canRewrite) return false
+            val existingStats = storedStats.stats
+            val mergedStats = existingStats + incoming.stats.filterKeys { it !in existingStats }
+            val merged = LibraryBackup(
+                favorites = getFavorites() + incoming.favorites,
+                playlists = mergedPlaylists,
+                stats = mergedStats
+            )
+            return restoreBackup(LibraryBackupCodec.encode(merged))
+        }
     }
 
     fun getCacheDirSize(): Long {
@@ -127,13 +137,11 @@ class LibraryManager(context: Context) {
 
     private val statsKey = "stats"
 
-    fun getAllStats(): Map<String, PlayStats> {
-        val json = favPrefs.getString(statsKey, null) ?: return emptyMap()
-        val parsed = parseStats(json)
-        statsCanBeRewritten = runCatching {
-            parsed.size == JSONObject(json).keys().asSequence().count()
-        }.getOrDefault(false)
-        return parsed
+    fun getAllStats(): Map<String, PlayStats> = synchronized(STATS_LOCK) { readStats().stats }
+
+    private fun readStats(): LibraryStatsCodec.ReadResult {
+        val json = favPrefs.getString(statsKey, null) ?: return LibraryStatsCodec.ReadResult(emptyMap(), true)
+        return LibraryStatsCodec.decode(json)
     }
 
     fun getStatsFor(uri: String): PlayStats {
@@ -141,13 +149,23 @@ class LibraryManager(context: Context) {
     }
 
     /** Creates a user-data-only backup; no audio or cached artwork bytes are included. */
-    fun createBackup(): String = LibraryBackupCodec.encode(
-        LibraryBackup(
-            favorites = getFavorites(),
-            playlists = getPlaylists(),
-            stats = getAllStats()
+    fun createBackup(): String = synchronized(STATS_LOCK) {
+        val storedStats = readStats()
+        check(storedStats.canRewrite) {
+            "Stored playback statistics contain unrecognized or conflicting data; backup was not generated"
+        }
+        val storedPlaylists = getPlaylists()
+        check(playlistsCanBeRewritten) {
+            "Stored playlists contain unrecognized data; backup was not generated"
+        }
+        LibraryBackupCodec.encode(
+            LibraryBackup(
+                favorites = getFavorites(),
+                playlists = storedPlaylists,
+                stats = storedStats.stats
+            )
         )
-    )
+    }
 
     /**
      * Validates the entire backup before replacing preference state. SharedPreferences applies
@@ -155,86 +173,85 @@ class LibraryManager(context: Context) {
      */
     fun restoreBackup(json: String): Boolean {
         val backup = LibraryBackupCodec.decode(json) ?: return false
-        val staged = runCatching { restoreJournal.stage(json) }.isSuccess
-        if (!staged) return false
-        val previous = LibraryBackup(
-            favorites = getFavorites(),
-            playlists = getPlaylists(),
-            stats = getAllStats()
-        )
-        val restored = favPrefs.edit()
-            .putStringSet("favorites", backup.favorites)
-            .putString("playlists", LibraryBackupCodec.encodePlaylists(backup.playlists))
-            .putString("stats", LibraryBackupCodec.encodeStats(backup.stats))
-            .commit()
-        if (!restored) {
-            // SharedPreferences normally leaves values untouched on a failed commit, but the
-            // contract does not promise that. Best-effort rollback keeps a transient failure from
-            // exposing a partially replaced in-memory library.
-            val rolledBack = runCatching {
-                favPrefs.edit()
-                    .putStringSet("favorites", previous.favorites)
-                    .putString("playlists", LibraryBackupCodec.encodePlaylists(previous.playlists))
-                    .putString("stats", LibraryBackupCodec.encodeStats(previous.stats))
-                    .commit()
-            }.getOrDefault(false)
-            if (rolledBack) {
-                restoreJournal.clear()
+        synchronized(STATS_LOCK) {
+            if (runCatching { restoreJournal.stage(json) }.isFailure) return false
+            // Keep the original preference representations so failed restore/rollback cannot
+            // normalize or discard data that this version does not understand.
+            val hadFavorites = favPrefs.contains("favorites")
+            val previousFavorites = favPrefs.getStringSet("favorites", emptySet())?.toSet()
+            val hadPlaylists = favPrefs.contains("playlists")
+            val previousPlaylists = favPrefs.getString("playlists", null)
+            val hadStats = favPrefs.contains(statsKey)
+            val previousStats = favPrefs.getString(statsKey, null)
+            val restored = favPrefs.edit()
+                .putStringSet("favorites", backup.favorites)
+                .putString("playlists", LibraryBackupCodec.encodePlaylists(backup.playlists))
+                .putString(statsKey, LibraryStatsCodec.encode(backup.stats))
+                .commit()
+            if (!restored) {
+                val rolledBack = runCatching {
+                    favPrefs.edit().apply {
+                        if (hadFavorites && previousFavorites != null) putStringSet("favorites", previousFavorites)
+                        else remove("favorites")
+                        if (hadPlaylists && previousPlaylists != null) putString("playlists", previousPlaylists)
+                        else remove("playlists")
+                        if (hadStats && previousStats != null) putString(statsKey, previousStats)
+                        else remove(statsKey)
+                    }.commit()
+                }.getOrDefault(false)
+                if (rolledBack) restoreJournal.clear()
+                // If rollback fails, leave the staged incoming backup for a deliberate retry.
+                return false
             }
-            // Keep the staged incoming backup when rollback itself fails. A later process can
-            // inspect pendingRestorePreview() and retry rather than silently losing the intent.
-        }
-        if (restored) {
             playlistsCanBeRewritten = true
-            statsCanBeRewritten = true
             restoreJournal.clear()
+            return true
         }
-        return restored
     }
 
     fun pendingRestorePreview(): LibraryBackupPreview? = restoreJournal.read()?.let(LibraryBackupCodec::preview)
 
-    fun retryPendingRestore(): Boolean = restoreJournal.read()?.let(::restoreBackup) ?: false
+    fun retryPendingRestore(): Boolean = synchronized(STATS_LOCK) {
+        restoreJournal.read()?.let(::restoreBackup) ?: false
+    }
 
     fun discardPendingRestore() = restoreJournal.clear()
 
     private fun saveAllStats(stats: Map<String, PlayStats>) {
-        if (!statsCanBeRewritten) return
-        val root = JSONObject()
-        stats.forEach { (uri, s) ->
-            val obj = JSONObject().apply {
-                put("pc", s.playCount)
-                put("sc", s.skipCount)
-                put("lp", s.lastPlayed)
-            }
-            root.put(uri, obj)
-        }
-        favPrefs.edit().putString(statsKey, root.toString()).apply()
+        if (!readStats().canRewrite) return
+        favPrefs.edit().putString(statsKey, LibraryStatsCodec.encode(stats)).apply()
     }
 
     fun recordPlay(uri: String) {
-        val all = getAllStats().toMutableMap()
-        val current = all[uri] ?: PlayStats()
-        all[uri] = PlayStats(
-            playCount = current.playCount + 1,
-            skipCount = current.skipCount,
-            lastPlayed = System.currentTimeMillis()
-        )
-        saveAllStats(all)
+        synchronized(STATS_LOCK) {
+            val all = readStats().stats.toMutableMap()
+            val current = all[uri] ?: PlayStats()
+            all[uri] = PlayStats(
+                playCount = current.playCount + 1,
+                skipCount = current.skipCount,
+                lastPlayed = System.currentTimeMillis()
+            )
+            saveAllStats(all)
+        }
     }
 
     fun recordSkip(uri: String) {
-        val all = getAllStats().toMutableMap()
-        val current = all[uri] ?: PlayStats()
-        all[uri] = PlayStats(
-            playCount = current.playCount,
-            skipCount = current.skipCount + 1,
-            lastPlayed = current.lastPlayed
-        )
-        saveAllStats(all)
+        synchronized(STATS_LOCK) {
+            val all = readStats().stats.toMutableMap()
+            val current = all[uri] ?: PlayStats()
+            all[uri] = PlayStats(
+                playCount = current.playCount,
+                skipCount = current.skipCount + 1,
+                lastPlayed = current.lastPlayed
+            )
+            saveAllStats(all)
+        }
     }
 
     internal companion object Parsers {
+        internal fun withPreferencesForTesting(context: Context, preferences: SharedPreferences): LibraryManager =
+            LibraryManager(context, preferences)
+
         fun calculateDirSize(dir: File): Long {
             val files = dir.listFiles() ?: return 0L
             return files.sumOf {
@@ -308,41 +325,8 @@ class LibraryManager(context: Context) {
             }
         }
 
-        fun parseStats(json: String): Map<String, PlayStats> = try {
-            val obj = JSONObject(json)
-            val entries = buildList {
-                val keys = obj.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val values = runCatching {
-                        val item = obj.getJSONObject(key)
-                        PlayStatsValues(
-                            playCount = item.optInt("pc", 0),
-                            skipCount = item.optInt("sc", 0),
-                            lastPlayed = item.optLong("lp", 0L)
-                        )
-                    }.getOrNull()
-                    add(key to values)
-                }
-            }
-            parseStatsEntries(entries)
-        } catch (_: Exception) {
-            emptyMap()
-        }
+        fun parseStats(json: String): Map<String, PlayStats> = LibraryStatsCodec.decode(json).stats
 
-        fun parseStatsEntries(entries: Iterable<Pair<String, PlayStatsValues?>>): Map<String, PlayStats> =
-            buildMap {
-                entries.forEach { (uri, values) ->
-                    if (values != null) {
-                        put(
-                            uri, PlayStats(
-                                playCount = values.playCount.coerceAtLeast(0),
-                                skipCount = values.skipCount.coerceAtLeast(0),
-                                lastPlayed = values.lastPlayed.coerceAtLeast(0L)
-                            )
-                        )
-                    }
-                }
-            }
+        private val STATS_LOCK = Any()
     }
 }
