@@ -257,6 +257,10 @@ class PlayerViewModel : ViewModel() {
     private val _trackList = MutableStateFlow<List<String>>(emptyList())
     val trackList: StateFlow<List<String>> = _trackList
 
+    /** Changes after a successful full scan so player-side document caches refresh without rescanning. */
+    private val _libraryRefreshGeneration = MutableStateFlow(0L)
+    val libraryRefreshGeneration: StateFlow<Long> = _libraryRefreshGeneration
+
     /** Projection of the service-owned Media3 queue for queue surfaces; never used as playback state. */
     private val _playbackQueue = MutableStateFlow(PlaybackQueueSnapshot())
     val playbackQueue: StateFlow<PlaybackQueueSnapshot> = _playbackQueue
@@ -1120,6 +1124,7 @@ class PlayerViewModel : ViewModel() {
                             _preloadedCache.complete(currentCacheSnapshot)
                             _scanFailures.value = result.failedFiles
                             _isReady.value = true
+                            _libraryRefreshGeneration.value += 1L
                         }
                     }
                 }
@@ -1196,6 +1201,7 @@ class PlayerViewModel : ViewModel() {
                         _scanFailures.value = result.failedFiles
                         _isReady.value = true
                         _startupState.value = StartupState.Ready
+                        _libraryRefreshGeneration.value += 1L
                     }
                 }
             }
@@ -1313,6 +1319,7 @@ class PlayerViewModel : ViewModel() {
                         _scanFailures.value = result.failedFiles
                         _isReady.value = true
                         _startupState.value = StartupState.Ready
+                        _libraryRefreshGeneration.value += 1L
                     }
                 }
             }

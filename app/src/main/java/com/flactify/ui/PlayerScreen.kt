@@ -68,46 +68,28 @@ fun PlayerScreen(
         .getString("last_uri", null)
         ?.let(Uri::parse)
     val track = nowPlaying.current
-    val externalLyricsKey = track?.let {
-        ExternalLyricsCacheKey(
-            trackKey = it.identity.stableKey,
-            title = it.title,
-            artist = it.artist,
-            album = it.album
-        )
-    }
-    val externalLyrics by produceState<List<Pair<Long, String>>?>(
-        initialValue = null,
-        key1 = externalLyricsKey,
-        key2 = selectedTreeUri
+    val libraryRefreshGeneration by viewModel.libraryRefreshGeneration.collectAsState()
+    val externalLyricsResult by produceState(
+        initialValue = ExternalLyricsLoadResult(ExternalLyricsStatus.UNAVAILABLE),
+        key1 = track?.identity?.stableKey,
+        key2 = selectedTreeUri,
+        key3 = libraryRefreshGeneration
     ) {
-        value = track?.let { currentTrack ->
-            val cacheKey = externalLyricsKey ?: return@let null
-            withContext(Dispatchers.IO) {
-                ExternalLyricsCache.getOrLoad(cacheKey) {
-                    try {
-                        val sibling = externalLyricsUriFor(currentTrack.identity.uri, selectedTreeUri)
-                        sibling?.let { context.contentResolver.openInputStream(it)?.use(::readExternalLyrics) }
-                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                        throw cancelled
-                    } catch (_: SecurityException) {
-                        // A revoked SAF grant should mean “no external lyrics”, not a failed player screen.
-                        null
-                    } catch (_: java.io.IOException) {
-                        null
-                    }
-                }
-            }
+        val currentTrack = track ?: return@produceState
+        value = withContext(Dispatchers.IO) {
+            loadExternalLyrics(
+                resolver = context.contentResolver,
+                trackKey = currentTrack.identity.stableKey,
+                trackUri = currentTrack.identity.uri,
+                selectedTreeUri = selectedTreeUri,
+                libraryGeneration = libraryRefreshGeneration
+            )
         }
     }
     val trackLyricsKey = track?.identity?.stableKey
     var useExternalLyrics by remember(trackLyricsKey) { mutableStateOf(false) }
     var lyricOffsetMs by remember(trackLyricsKey) { mutableLongStateOf(0L) }
-    val selectedLyrics = when {
-        useExternalLyrics && !externalLyrics.isNullOrEmpty() -> externalLyrics.orEmpty()
-        lyrics.isNotEmpty() -> lyrics
-        else -> externalLyrics.orEmpty()
-    }
+    val selectedLyrics = lyricsForDisplay(lyrics, externalLyricsResult, useExternalLyrics)
     val isShuffleMode = nowPlaying.shuffleEnabled
     val repeatMode = nowPlaying.repeatMode
     val audioInfo by viewModel.audioInfo.collectAsState()
@@ -510,7 +492,8 @@ fun PlayerScreen(
             LyricsBottomSheet(
                 viewModel = viewModel,
                 embeddedLyrics = lyrics,
-                externalLyrics = externalLyrics.orEmpty(),
+                externalLyrics = externalLyricsResult.lyrics,
+                externalLyricsStatus = externalLyricsResult.status,
                 useExternalLyrics = useExternalLyrics,
                 onUseExternalLyricsChanged = { useExternalLyrics = it },
                 manualOffsetMs = lyricOffsetMs,
@@ -609,6 +592,7 @@ private fun LyricsBottomSheet(
     viewModel: PlayerViewModel,
     embeddedLyrics: List<Pair<Long, String>>,
     externalLyrics: List<Pair<Long, String>>,
+    externalLyricsStatus: ExternalLyricsStatus,
     useExternalLyrics: Boolean,
     onUseExternalLyricsChanged: (Boolean) -> Unit,
     manualOffsetMs: Long,
@@ -616,11 +600,11 @@ private fun LyricsBottomSheet(
     onDismiss: () -> Unit
 ) {
     val position by viewModel.nowPlayingPosition.collectAsState(initial = PositionState())
-    val lyrics = when {
-        useExternalLyrics && externalLyrics.isNotEmpty() -> externalLyrics
-        embeddedLyrics.isNotEmpty() -> embeddedLyrics
-        else -> externalLyrics
-    }
+    val lyrics = lyricsForDisplay(
+        embeddedLyrics,
+        ExternalLyricsLoadResult(externalLyricsStatus, externalLyrics),
+        useExternalLyrics
+    )
     val displayedLyrics = remember(lyrics, manualOffsetMs) {
         applyLyricsOffset(lyrics, manualOffsetMs)
     }
@@ -648,6 +632,32 @@ private fun LyricsBottomSheet(
         ) {
             Text("歌詞", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(12.dp))
+            if (embeddedLyrics.isEmpty() && externalLyrics.isEmpty()) {
+                Text(
+                    text = when (externalLyricsStatus) {
+                        ExternalLyricsStatus.FOUND -> "この曲には歌詞がありません"
+                        ExternalLyricsStatus.NOT_FOUND -> "外部LRCファイルが見つかりません"
+                        ExternalLyricsStatus.UNAVAILABLE -> "外部歌詞を利用できません（フォルダ権限またはproviderの制約）"
+                        ExternalLyricsStatus.INVALID -> "外部LRCの形式またはサイズを確認してください"
+                        ExternalLyricsStatus.ERROR -> "外部LRCの読み込みに失敗しました"
+                    },
+                    color = Color(0x99FFFFFF),
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            } else if (embeddedLyrics.isNotEmpty() && externalLyricsStatus != ExternalLyricsStatus.FOUND) {
+                Text(
+                    text = when (externalLyricsStatus) {
+                        ExternalLyricsStatus.NOT_FOUND -> "外部LRCなし・埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.UNAVAILABLE -> "外部LRCは利用できないため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.INVALID -> "外部LRCを読み取れないため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.ERROR -> "外部LRCの読み込みに失敗したため、埋め込み歌詞を表示中"
+                        ExternalLyricsStatus.FOUND -> ""
+                    },
+                    color = Color(0x99FFFFFF),
+                    fontSize = 12.sp
+                )
+            }
             if (embeddedLyrics.isNotEmpty() && externalLyrics.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
